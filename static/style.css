@@ -1,0 +1,6 @@
+body { font-family: system-ui, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 16px; }
+h1 { font-size: 1.5rem; }
+.stat { font-size: 1.1rem; margin: 6px 0; }
+button { padding: 8px 14px; margin: 6px 0; cursor: pointer; }
+input { padding: 8px; }
+#leaderboard li { margin: 4px 0; }

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Memory Card Voice Bot</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main>
+    <h1>🧠 Memory Card Voice Bot</h1>
+    <div id="setup">
+      <input id="name" placeholder="Your name" value="Player" />
+      <button id="start">Start voice game</button>
+    </div>
+    <section id="game" hidden>
+      <div class="stat">Status: <span id="status">—</span></div>
+      <div class="stat">Round: <span id="round">—</span></div>
+      <div class="stat">Score: <span id="score">0</span></div>
+      <div class="stat">Sequence length: <span id="len">—</span></div>
+      <button id="end">End game</button>
+    </section>
+    <h2>🏆 Leaderboard</h2>
+    <ol id="leaderboard"></ol>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
