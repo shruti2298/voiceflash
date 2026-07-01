@@ -74,3 +74,59 @@ class GameService:
             raise KeyError(session_id)
         rnd = self._current_round(session)
         return list(rnd.sequence) if rnd else []
+
+    def submit_answer(self, session_id: str, round_id: str, transcript: str) -> AnswerResult:
+        session = self.db.get(models.GameSession, session_id)
+        if session is None:
+            raise KeyError(session_id)
+        rnd = self.db.get(models.Round, round_id)
+        if rnd is None or rnd.session_id != session_id:
+            raise KeyError(round_id)
+
+        # --- idempotency guard: a round already answered returns its stored result ---
+        if rnd.status != "PENDING" and rnd.response is not None:
+            return self._result_from_stored(session, rnd)
+
+        ev = engine.evaluate(list(rnd.sequence), transcript)
+
+        response = models.Response(
+            round_id=rnd.id, transcript=transcript, normalized=ev.heard,
+            is_correct=ev.is_correct, points_awarded=ev.points,
+        )
+        self.db.add(response)
+        rnd.status = "CORRECT" if ev.is_correct else "WRONG"
+
+        if ev.is_correct:
+            session.score += ev.points
+            session.current_round += 1
+            self.db.flush()
+            self._new_round(session)            # prepare the next round
+        else:
+            session.status = "ENDED"
+            from datetime import datetime, timezone
+            session.ended_at = datetime.now(timezone.utc)
+
+        self.db.commit()
+
+        # refresh caches
+        if session.status == "ACTIVE":
+            store.set_active_session(session.id, self._state(session).model_dump())
+        else:
+            store.drop_active_session(session.id)
+            store.invalidate_leaderboard()
+
+        return AnswerResult(
+            session_id=session.id, round_number=rnd.round_number,
+            is_correct=ev.is_correct, points_awarded=ev.points,
+            total_score=session.score, status=session.status,
+            expected=ev.expected, heard=ev.heard,
+        )
+
+    def _result_from_stored(self, session: models.GameSession, rnd: models.Round) -> AnswerResult:
+        resp = rnd.response
+        return AnswerResult(
+            session_id=session.id, round_number=rnd.round_number,
+            is_correct=resp.is_correct, points_awarded=resp.points_awarded,
+            total_score=session.score, status=session.status,
+            expected=list(rnd.sequence), heard=list(resp.normalized),
+        )
