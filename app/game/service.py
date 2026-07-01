@@ -54,3 +54,23 @@ class GameService:
         state = self._state(session)
         store.set_active_session(session.id, state.model_dump())
         return state
+
+    def get_state(self, session_id: str) -> SessionState:
+        cached = store.get_active_session(session_id)
+        if cached is not None:
+            return SessionState(**cached)
+        session = self.db.get(models.GameSession, session_id)
+        if session is None:
+            raise KeyError(session_id)
+        state = self._state(session)
+        if session.status == "ACTIVE":
+            store.set_active_session(session_id, state.model_dump())
+        return state
+
+    def get_current_sequence(self, session_id: str) -> List[str]:
+        """Used by the voice bot only — never exposed via the public API."""
+        session = self.db.get(models.GameSession, session_id)
+        if session is None:
+            raise KeyError(session_id)
+        rnd = self._current_round(session)
+        return list(rnd.sequence) if rnd else []
