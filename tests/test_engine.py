@@ -19,3 +19,11 @@ def test_generate_sequence_never_exceeds_word_pool():
     # even with an absurd max_len, sampling must not raise ValueError
     seq = engine.generate_sequence(round_number=1000, max_len=10_000)
     assert len(seq) == len(WORDS)
+
+
+def test_normalize_lowercases_strips_punctuation_and_fillers():
+    assert engine.normalize("Apple, tiger and river!") == ["apple", "tiger", "river"]
+
+
+def test_normalize_drops_leading_filler_phrases():
+    assert engine.normalize("um the answer is apple tiger") == ["answer", "apple", "tiger"]

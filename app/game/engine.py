@@ -18,3 +18,10 @@ def generate_sequence(round_number: int, max_len: int = 8) -> List[str]:
     n = min(sequence_length(round_number, max_len), len(WORDS))
     # sample without replacement so the sequence has no repeats (easier to say/hear)
     return random.sample(WORDS, n)
+
+
+def normalize(text: str) -> List[str]:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)          # drop punctuation
+    tokens = [t for t in text.split() if t and t not in FILLER]
+    return tokens
