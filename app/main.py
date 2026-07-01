@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.db.database import Base, engine
 from app.api.routes import router as api_router
+from app.voice.webrtc import router as webrtc_router
 
 
 @asynccontextmanager
@@ -18,3 +20,5 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Memory Card Voice Bot", lifespan=lifespan)
 app.include_router(api_router, prefix="/api")
+app.include_router(webrtc_router, prefix="/rtc")
+app.mount("/", StaticFiles(directory="static", html=True), name="static")

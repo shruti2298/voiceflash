@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = "postgresql+psycopg2://voiceflash:voiceflash@localhost:5432/voiceflash"
+    database_url: str = "postgresql+psycopg2://voiceflash:voiceflash@localhost:5433/voiceflash"
     deepgram_api_key: str = ""
     groq_api_key: str = ""
     groq_model: str = "llama-3.1-8b-instant"
