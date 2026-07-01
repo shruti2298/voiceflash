@@ -1,0 +1,38 @@
+Backend Engineering Assignment
+
+Memory Card Voice Bot using Pipecat
+Objective
+Build a voice-based Memory Card bot using the Pipecat framework. The bot should conduct a memory game with a user over a voice call. It speaks a sequence of words/cards, the user repeats the sequence back, and the bot evaluates whether the response is correct.
+The game should get progressively harder as the user clears rounds.
+What You Need to Build
+Voice Bot Backend: A Pipecat-based pipeline that starts a memory game, speaks a sequence to the user, listens to the user repeat it, validates the response, updates the game state, and moves to the next round or ends the game.
+Backend APIs and Database: Store game sessions, rounds, user responses, scores, and session status in a database. Create APIs for starting a session, fetching game state, ending a session, and viewing recent scores or leaderboard.
+Caching: Use caching for some meaningful part of the system, such as active session state, current round state, leaderboard, or recently used sequences.
+Frontend: A minimal web UI to start/join the memory game session and display game state such as current score, current round, session status, and final result.
+Technical Requirements
+Use Pipecat as the core framework for the voice pipeline.
+Implement proper turn-taking: the bot should wait for the user to finish repeating the sequence before evaluating.
+Handle interruptions cleanly. If the user interrupts the bot mid-speech, the bot should recover gracefully. Demonstrate this in the video.
+The bot should have an engaging and human-like game-host behavior.
+Persist session, round, response, and score data in a database.
+Expose backend APIs for session and score-related data.
+Use caching for at least one meaningful backend flow.
+Avoid double-scoring the same user response.
+The word/card list can be hardcoded or seeded.
+
+
+
+Deliverables
+1. Code Repository
+Share a GitHub/GitLab repo or zip with complete, runnable code.
+Include a README with setup instructions.
+2. Video Walkthrough
+Record a 10-15 minute screen-share video covering:
+Demo: Show the bot working end-to-end. Start a session, play multiple rounds, show correct and incorrect responses.
+Interruption handling: Show how the bot behaves when interrupted mid-speech.
+Code walkthrough: Walk through the key parts of your code: Pipecat pipeline setup, custom frame processor, database model, APIs, caching, and frontend-backend communication.
+Kindly submit the above deliverables on this form: <submission form link>
+Notes
+You can use Deepgram for speech-to-text and text-to-speech. They give a decent amount of free credits.
+For LLM providers, you can use Groq, Gemini, OpenAI, or any other provider with a free tier.
+The core memory-sequence validation should be implemented in backend code and should not depend entirely on an LLM prompt.
