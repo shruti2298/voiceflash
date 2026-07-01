@@ -130,3 +130,30 @@ class GameService:
             total_score=session.score, status=session.status,
             expected=list(rnd.sequence), heard=list(resp.normalized),
         )
+
+    def end_session(self, session_id: str) -> SessionState:
+        session = self.db.get(models.GameSession, session_id)
+        if session is None:
+            raise KeyError(session_id)
+        if session.status == "ACTIVE":
+            session.status = "ENDED"
+            from datetime import datetime, timezone
+            session.ended_at = datetime.now(timezone.utc)
+            self.db.commit()
+        store.drop_active_session(session_id)
+        store.invalidate_leaderboard()
+        return self._state(session)
+
+    def leaderboard(self, limit: int = 10) -> List[LeaderboardEntry]:
+        cached = store.get_leaderboard()
+        if cached is not None:
+            return [LeaderboardEntry(**row) for row in cached[:limit]]
+        rows = (
+            self.db.query(models.GameSession)
+            .order_by(models.GameSession.score.desc(), models.GameSession.created_at.asc())
+            .limit(limit)
+            .all()
+        )
+        entries = [LeaderboardEntry(player_name=r.player_name, score=r.score) for r in rows]
+        store.set_leaderboard([e.model_dump() for e in entries])
+        return entries

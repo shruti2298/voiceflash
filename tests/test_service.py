@@ -66,3 +66,24 @@ def test_double_submission_is_idempotent(db):
     again = svc.submit_answer(started.session_id, started.round_id, " ".join(seq))
     assert again.points_awarded == first.points_awarded
     assert again.total_score == first.total_score == 30   # not 60
+
+
+def test_end_session_marks_ended(db):
+    store.clear_all()
+    svc = GameService(db)
+    started = svc.start_session("Gil")
+    ended = svc.end_session(started.session_id)
+    assert ended.status == "ENDED"
+
+def test_leaderboard_orders_by_score_and_caches(db):
+    store.clear_all()
+    svc = GameService(db)
+    for name, wrong in [("Hi", "x"), ("Jo", "y")]:
+        s = svc.start_session(name)
+        seq = svc.get_current_sequence(s.session_id)
+        if name == "Jo":
+            svc.submit_answer(s.session_id, s.round_id, " ".join(seq))  # Jo scores 30
+        svc.end_session(s.session_id)
+    lb = svc.leaderboard(limit=10)
+    assert lb[0].player_name == "Jo"
+    assert store.get_leaderboard() is not None      # now cached
