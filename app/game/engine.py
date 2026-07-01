@@ -25,3 +25,26 @@ def normalize(text: str) -> List[str]:
     text = re.sub(r"[^a-z0-9\s]", " ", text)          # drop punctuation
     tokens = [t for t in text.split() if t and t not in FILLER]
     return tokens
+
+
+@dataclass
+class Evaluation:
+    is_correct: bool
+    points: int
+    expected: List[str]
+    heard: List[str]
+
+
+def score(sequence_length_: int) -> int:
+    return 10 * sequence_length_
+
+
+def evaluate(expected: List[str], transcript: str) -> Evaluation:
+    heard = normalize(transcript)
+    is_correct = heard == expected
+    return Evaluation(
+        is_correct=is_correct,
+        points=score(len(expected)) if is_correct else 0,
+        expected=expected,
+        heard=heard,
+    )

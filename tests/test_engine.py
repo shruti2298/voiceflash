@@ -14,6 +14,7 @@ def test_generate_sequence_has_correct_length_and_valid_words():
     assert all(w in WORDS for w in seq)
 
 
+
 def test_generate_sequence_never_exceeds_word_pool():
     from app.game.words import WORDS
     # even with an absurd max_len, sampling must not raise ValueError
@@ -27,3 +28,21 @@ def test_normalize_lowercases_strips_punctuation_and_fillers():
 
 def test_normalize_drops_leading_filler_phrases():
     assert engine.normalize("um the answer is apple tiger") == ["answer", "apple", "tiger"]
+
+
+def test_evaluate_correct_answer():
+    r = engine.evaluate(["apple", "tiger"], "Apple, tiger!")
+    assert r.is_correct is True
+    assert r.points == 20            # 10 * length(2)
+    assert r.expected == ["apple", "tiger"]
+
+
+def test_evaluate_wrong_order_is_incorrect():
+    r = engine.evaluate(["apple", "tiger"], "tiger apple")
+    assert r.is_correct is False
+    assert r.points == 0
+
+
+def test_evaluate_wrong_word_is_incorrect():
+    r = engine.evaluate(["apple", "tiger"], "apple river")
+    assert r.is_correct is False
