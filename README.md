@@ -102,15 +102,49 @@ tests/                       # pytest suite (engine, cache, service, API)
 - Deepgram API key (STT + TTS) — free tier available
 - Groq API key (LLM host banter) — free tier available
 
-### Steps
+### First-time setup
+
+1. **Start Postgres:**
+
+   ```bash
+   docker compose up -d
+   docker compose ps      # wait until the "db" service shows (healthy)
+   ```
+
+2. **Create the virtualenv and install dependencies:**
+
+   ```bash
+   python3.11 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+3. **Configure environment variables:**
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Then edit `.env` and fill in `DEEPGRAM_API_KEY` and `GROQ_API_KEY`. `.env` is
+   git-ignored, so your keys never get committed.
+
+4. **Run the server:**
+
+   ```bash
+   uvicorn app.main:app --reload --port 8000
+   ```
+
+   Open **http://localhost:8000** in your browser, allow microphone access, and click
+   "Start voice game".
+
+### Starting the server again later
+
+Once the one-time setup above is done, restarting only needs:
 
 ```bash
-docker compose up -d                       # starts Postgres on localhost:5433
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env                       # fill in DEEPGRAM_API_KEY and GROQ_API_KEY
+docker compose up -d                       # if Postgres isn't already running
+source .venv/bin/activate
 uvicorn app.main:app --reload --port 8000
-# open http://localhost:8000
 ```
 
 > **Note on the Postgres port:** `docker-compose.yml` maps the container's Postgres to
@@ -121,6 +155,16 @@ uvicorn app.main:app --reload --port 8000
 > `role "voiceflash" does not exist` error). Mapping to `5433` sidesteps the conflict; if
 > port 5433 is free on your machine you don't need to change anything. `.env.example` and
 > `app/config.py`'s default both already point at `5433`.
+
+### Troubleshooting
+
+- **`uvicorn: command not found`** — the virtualenv isn't active; run
+  `source .venv/bin/activate` first.
+- **`OperationalError` / `role "voiceflash" does not exist`** — something else is already
+  listening on the Postgres port. Check with `lsof -nP -iTCP:5433 -sTCP:LISTEN` (or `:5432`
+  if you changed it back) and make sure it's the `voiceflash-db-1` container.
+- **Server already running** — check `lsof -nP -iTCP:8000 -sTCP:LISTEN` before starting a
+  second instance; only one process can bind port 8000 at a time.
 
 Run the tests (no Postgres or API keys required — the suite uses an isolated in-memory
 SQLite database):
