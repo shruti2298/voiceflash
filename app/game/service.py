@@ -1,5 +1,6 @@
 from typing import List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -179,9 +180,16 @@ class GameService:
         cached = store.get_leaderboard()
         if cached is not None:
             return [LeaderboardEntry(**row) for row in cached[:limit]]
+        # One row per player, not per session: a player who has played
+        # multiple sessions should appear once, ranked by their best score.
         rows = (
-            self.db.query(models.GameSession)
-            .order_by(models.GameSession.score.desc(), models.GameSession.created_at.asc())
+            self.db.query(
+                models.GameSession.player_name,
+                func.max(models.GameSession.score).label("score"),
+            )
+            .group_by(models.GameSession.player_name)
+            .order_by(func.max(models.GameSession.score).desc(),
+                      func.min(models.GameSession.created_at).asc())
             .limit(limit)
             .all()
         )

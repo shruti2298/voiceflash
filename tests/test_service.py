@@ -123,6 +123,28 @@ def test_leaderboard_orders_by_score_and_caches(db):
     assert store.get_leaderboard() is not None      # now cached
 
 
+def test_leaderboard_dedupes_by_player_keeping_best_score(db):
+    store.clear_all()
+    svc = GameService(db)
+
+    # Same player plays three sessions with different outcomes: a low score,
+    # a high score, then another low score. The leaderboard must show this
+    # player exactly once, with their best score — not once per session.
+    for wrong in [True, False, True]:
+        s = svc.start_session("Repeat")
+        seq = svc.get_current_sequence(s.session_id)
+        if wrong:
+            svc.submit_answer(s.session_id, s.round_id, "nope")
+        else:
+            svc.submit_answer(s.session_id, s.round_id, " ".join(seq))  # scores 30
+        svc.end_session(s.session_id)
+
+    lb = svc.leaderboard(limit=10)
+    repeat_entries = [e for e in lb if e.player_name == "Repeat"]
+    assert len(repeat_entries) == 1
+    assert repeat_entries[0].score == 30
+
+
 def test_submit_answer_recovers_from_concurrent_insert_conflict(db):
     store.clear_all()
     svc = GameService(db)
