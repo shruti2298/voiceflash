@@ -437,3 +437,195 @@ you have one; don't stretch this project to cover it.
   already-ended session, resubmitting an already-answered round, and the
   voice pipeline resuming a REST-created session instead of forking a new
   one are all explicit idempotent/resumable code paths, not accidents.
+
+---
+
+## 9. End-to-end flow reference — where to look, in order
+
+Use this as a navigation map when asked "walk me through what happens
+when...". Each row is the exact call order, file by file.
+
+### 9.1 Starting a game (full voice path)
+
+1. `static/app.js` `startGame()` — `POST /api/sessions`
+2. `app/api/routes.py` `start_session()` → `app/game/service.py`
+   `GameService.start_session()` → `app/game/engine.py`
+   `generate_sequence()` (round 1 = 3 words) → commits `GameSession` + `Round`
+   → `app/cache/store.py` `set_active_session()` (Redis)
+3. Browser opens `RTCPeerConnection`, captures mic, creates SDP offer
+4. `static/app.js` `startGame()` — `POST /rtc/offer` with `{sdp, type,
+   player_name, session_id}` (the `session_id` from step 2 — this is the
+   link that makes §6.3 work)
+5. `app/voice/webrtc.py` `offer()` — creates `SmallWebRTCConnection`, builds
+   `SmallWebRTCTransport`, schedules `run_bot()` as a background task,
+   returns the SDP answer
+6. `app/voice/bot.py` `run_bot()` — assembles the Pipecat pipeline, registers
+   `on_client_connected` → calls `MemoryGameProcessor._start_game()`
+7. `app/voice/game_processor.py` `_start_game()` →
+   `_start_session_sync()` → **resumes** the session from step 2 via
+   `GameService.get_state()` (not a new `start_session()` call) → `_banter()`
+   (Groq greeting) → `_speak()` (deterministic `TTSSpeakFrame` of the actual
+   sequence)
+
+### 9.2 Answering a round (voice path)
+
+1. User speaks → Deepgram STT streams back a transcript
+2. Pipecat transport's VAD path pushes `VADUserStartedSpeakingFrame`, then
+   (whenever it arrives) `TranscriptionFrame`, then
+   `VADUserStoppedSpeakingFrame` — order between the last two is not
+   guaranteed (§3.2, §8.8)
+3. `app/voice/game_processor.py` `process_frame()` accumulates transcript
+   text in `_buffer`; `_finish_turn()` fires once **both** the stop signal
+   and buffered text are present
+4. `_handle_user_turn()` → `_submit_sync()` (off the event loop via
+   `asyncio.to_thread`) → `GameService.submit_answer()`
+5. `app/game/service.py` `submit_answer()` → `engine.evaluate()` (pure,
+   deterministic) → persists `Response`, updates `GameSession.score`/
+   `current_round`, refreshes/invalidates Redis (§6.1 covers the race here)
+6. Back in `game_processor.py`: `_banter()` (Groq reacts to the result) →
+   `_speak()` (next sequence, or the reveal line if the game ended)
+
+### 9.3 Answering a round (REST path, used by tests / manual verification)
+
+`POST /api/sessions/{id}/answer` → `app/api/routes.py` `submit_answer()` →
+`GameService.get_state()` (to find the current `round_id`) →
+`GameService.submit_answer()` — **same function as the voice path**, so
+everything in 9.2 step 5 applies identically here.
+
+### 9.4 Reading state (frontend polling)
+
+`static/app.js` `refreshState()` (every 1.5s) → `GET /api/sessions/{id}` →
+`app/api/routes.py` `get_state()` → `GameService.get_state()` — cache-first
+against Redis (`app/cache/store.py` `get_active_session()`), falls back to
+Postgres only on a cache miss, then re-warms the cache.
+
+### 9.5 Leaderboard
+
+`GET /api/leaderboard` → `GameService.leaderboard()` — cache-first against
+Redis (`get_leaderboard()`, 60s TTL); on miss, queries `GameSession` ordered
+by `score DESC, created_at ASC`, then calls `set_leaderboard()` to refresh
+the cache. Invalidated (`invalidate_leaderboard()`) by `submit_answer()` and
+`end_session()` whenever a score could have changed.
+
+### 9.6 Interruption / barge-in
+
+User talks while the bot is mid-speech → transport's VAD path pushes
+`VADUserStartedSpeakingFrame` → `game_processor.py` `process_frame()` sees
+`self._bot_speaking is True` (tracked via `BotStartedSpeakingFrame`/
+`BotStoppedSpeakingFrame`, which broadcast upstream from
+`transport.output()`) → calls `self.broadcast_interruption()` → pushes a
+plain `InterruptionFrame` both directions → every processor's base
+`process_frame()` (Pipecat framework code, not ours) checks
+`isinstance(frame, InterruptionFrame)` and stops in-flight work — this is
+what actually silences the TTS/audio output.
+
+### 9.7 The concurrency race (double-submission)
+
+`app/game/service.py` `submit_answer()`: two calls both pass the
+`rnd.status != "PENDING"` check (both read `PENDING`) → both build a
+`Response` and attempt to write → the DB's `UniqueConstraint` on
+`Response.round_id` (`app/db/models.py`) lets exactly one commit succeed →
+the loser's `flush()`/`commit()` raises `IntegrityError`, caught in the
+`except IntegrityError:` block → rolls back, re-fetches, calls
+`_result_from_stored()` to return the winner's result. Test:
+`tests/test_service.py::test_submit_answer_recovers_from_concurrent_insert_conflict`.
+
+---
+
+## 10. Grill questions to expect — with honest answers
+
+These are the follow-up questions an interviewer would actually ask after
+hearing §8's talking points. Several of the answers are **real gaps found
+while re-reading this exact code just now** — say them as gaps, not as
+solved problems; that honesty is worth more than a confident non-answer.
+
+**Q: What happens if Redis goes down mid-game?**
+Right now: it breaks. `app/cache/store.py` has no try/except around any
+`_redis.*` call — `get_active_session`/`set_active_session`/etc. would raise
+a connection error straight up through `GameService`, surfacing as a 500 on
+every request and crashing the voice pipeline's background thread calls.
+The correct fix is a fallback-to-Postgres-on-cache-error path (treat Redis
+as an optimization, never a hard dependency for correctness) — not built
+here, and worth saying so directly.
+
+**Q: What happens if a client sends a `session_id` in `/rtc/offer` that
+doesn't exist?**
+Also breaks ungracefully today: `MemoryGameProcessor._start_session_sync()`
+calls `GameService.get_state()` with no try/except; `get_state` raises
+`KeyError` for an unknown session, which propagates out of
+`asyncio.to_thread` uncaught, likely tearing down that voice connection
+without ever telling the user why. The fix would be to catch `KeyError`
+there and fall back to `start_session()` (or reject the call cleanly) —
+same category of gap as the Redis one: an internal invariant that isn't
+defensively checked at a trust boundary.
+
+**Q: Why is there no ownership/auth check tying a `session_id` to the
+browser that created it? Could I steal someone else's session?**
+Yes, as built. Any client that obtains a valid `session_id` (e.g., by
+inspecting network traffic) could pass it to `/rtc/offer` or
+`/api/sessions/{id}/answer` and act on someone else's game. There's no
+per-session secret/token, no auth at all. Acceptable for this assignment's
+scope (no real user accounts exist); the fix at any real scale is a signed
+session token (or simply requiring auth and scoping sessions to a user id)
+checked at the API boundary, not something bolted onto `GameService`.
+
+**Q: Why catch `IntegrityError` instead of using `SELECT ... FOR UPDATE` to
+lock the row before checking?**
+Deliberate optimistic-concurrency choice: row locking would serialize every
+submission attempt (even the overwhelming majority that never race) behind
+a held lock for the duration of evaluation + write, adding latency to the
+common case to protect against a rare case. Catching the constraint
+violation costs nothing on the non-racing path and only pays a (cheap,
+one-time) rollback+refetch on the rare actual race. This is the standard
+optimistic-vs-pessimistic-locking trade-off, applied because double-
+submission is rare, not because locking is wrong in general — for a
+resource with heavy contention (not this one), locking or a queue would
+likely win instead.
+
+**Q: The DB constraint is the real guarantee — why bother with the
+application-level idempotency check (`rnd.status != "PENDING"`) at all?**
+Because the DB constraint only prevents *data corruption*; it doesn't, by
+itself, give the *caller* a correct response. Without the application check,
+a normal sequential resubmission (not a race — just the same client
+retrying, e.g., after a flaky network response) would still hit the
+constraint and raise, forcing every retry through the exception path. The
+application-level check makes the common, non-racing repeat-request case
+fast and clean; the exception path is a safety net for the rare true race,
+not the primary mechanism.
+
+**Q: Why poll every 1.5s from the frontend instead of pushing updates over
+a WebSocket or the WebRTC data channel that's already open?**
+Simplicity for this scope — polling needs no additional protocol and
+degrades trivially (a missed poll just means a 1.5s-stale UI, never a stuck
+one). At real scale, polling is the thing to replace first: it costs one
+Postgres/Redis round-trip per connected client every 1.5 seconds regardless
+of whether anything changed, whereas a push-based channel (the WebRTC data
+channel is already there, unused for this) would only send data when state
+actually changes.
+
+**Q: What happens if the user never stops talking — does the round hang
+forever?**
+Yes, currently. `game_processor.py`'s turn-finishing logic only fires once a
+stop signal arrives; if the VAD analyzer never detects silence (e.g.,
+continuous background noise), the turn simply waits with no timeout. The
+fix is a max-turn-duration timer that force-finishes the turn — not
+implemented here.
+
+**Q: Why does `engine.normalize()` strip filler words like "the"/"um" —
+what could that break?**
+It's a precision/recall trade-off for STT noise. If a real target word were
+ever one of the filler words (currently: `um, uh, the, a, an, and, then,
+was, is, please, okay`), it would be silently un-checkable — always
+stripped before comparison. In this project it's safe because the word pool
+(`app/game/words.py`) is curated to never include those words, but that's an
+implicit invariant between two files, not enforced by any test or
+assertion.
+
+**Q: The leaderboard cache is 60 seconds, the session cache is 30 minutes —
+how were those numbers chosen?**
+Not empirically tuned — reasonable defaults for a fast-paced game (a round
+resolves in seconds, so 30 minutes generously covers someone mid-game
+without letting abandoned sessions accumulate in Redis forever; 60 seconds
+keeps the leaderboard feeling near-live without hitting Postgres on every
+single leaderboard view). Be ready to say exactly that if pressed — these
+weren't load-tested.
