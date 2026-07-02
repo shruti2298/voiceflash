@@ -360,7 +360,8 @@ input:focus {
 }
 
 .game-over h2 { margin: 0 0 8px; }
-.game-over-sub { color: #6b6182; margin: 4px 0 0; font-size: 0.85rem; }
+.game-over-sub { color: #6b6182; margin: 4px 0 12px; font-size: 0.85rem; }
+.game-over .btn { width: auto; }
 
 .leaderboard-panel h2 {
   margin-top: 0;

@@ -148,6 +148,32 @@ async function endGame() {
 
 function stopPolling() { if (pollTimer) clearInterval(pollTimer); pollTimer = null; }
 
+function playAgain() {
+  stopPolling();
+  if (pc) {
+    try { pc.close(); } catch (e) { /* already closed */ }
+    pc = null;
+  }
+  sessionId = null;
+  lastScore = 0;
+  lastRound = 1;
+
+  // Reset the game panel back to its pre-game appearance so the next
+  // session starts clean instead of showing stale round/score/feedback.
+  document.getElementById("game").hidden = true;
+  document.getElementById("game-over").hidden = true;
+  document.getElementById("mic-row").hidden = false;
+  document.getElementById("end").hidden = false;
+  document.getElementById("last-round").hidden = true;
+  document.getElementById("feedback").textContent = "";
+  document.getElementById("feedback").className = "feedback";
+  document.getElementById("cards").innerHTML = "";
+  document.getElementById("score").textContent = "0";
+  document.getElementById("round").textContent = "—";
+
+  document.getElementById("setup").hidden = false;
+}
+
 async function refreshLeaderboard() {
   const res = await fetch("/api/leaderboard");
   const rows = await res.json();
@@ -200,6 +226,7 @@ function burstConfetti() {
 
 document.getElementById("start").addEventListener("click", startGame);
 document.getElementById("end").addEventListener("click", endGame);
+document.getElementById("play-again").addEventListener("click", playAgain);
 refreshLeaderboard();
 
 // ---- How to Play: collapsible panel + interactive step tabs ----
