@@ -773,3 +773,114 @@ live at once.
   tab pick a specific `deviceId` — a small, well-scoped addition if this
   becomes a recurring testing need, not built because it wasn't needed for
   the assignment's scope.
+
+---
+
+## 12. Assignment requirements in depth — exact structures for interview prep
+
+The assignment brief (`src/requirements.txt`) states three requirements this
+section maps directly against, with the *exact* current schema/contract for
+each — not a paraphrase.
+
+### 12.1 "Voice Bot Backend: a Pipecat-based pipeline that starts a memory
+game, speaks a sequence, listens, validates, updates game state, and moves
+to the next round or ends the game."
+
+Each clause, mapped to exact code:
+
+| Requirement clause | Exact code |
+|---|---|
+| Starts a memory game | `MemoryGameProcessor._start_game()` → `GameService.start_session()` (`app/game/service.py`) |
+| Speaks a sequence | `MemoryGameProcessor._speak()` → `TTSSpeakFrame` (bypasses the LLM — §3.2) |
+| Listens to the user repeat it | `process_frame()`'s `TranscriptionFrame`/VAD handling (§9.2) |
+| Validates the response | `engine.evaluate()` (`app/game/engine.py`) — pure, deterministic, no LLM call |
+| Updates game state | `GameService.submit_answer()` — persists `Response`, updates `GameSession.score`/`current_round` |
+| Moves to next round or ends | Same function: `ev.is_correct` branches to `_new_round()` (next round) or `session.status = "ENDED"` (game over) |
+
+The one-sentence version for the video: *"Every verb in that requirement
+sentence is a specific function, and they're wired together in exactly that
+order — nothing is implicit."*
+
+### 12.2 "Backend APIs and Database"
+
+**Exact database schema** (`app/db/models.py`, 3 tables):
+
+```
+game_sessions                        rounds                              responses
+─────────────                        ──────                              ─────────
+id             STRING PK (uuid)      id             STRING PK (uuid)     id              STRING PK (uuid)
+player_name    STRING NOT NULL       session_id     STRING NOT NULL      round_id        STRING NOT NULL
+status         STRING DEFAULT        round_number   INTEGER NOT NULL       FK -> rounds.id
+  'ACTIVE'       (ACTIVE | ENDED)      FK -> game_sessions.id               UNIQUE (uq_response_per_round)
+score          INTEGER DEFAULT 0     sequence       JSON NOT NULL        transcript      STRING NOT NULL
+current_round  INTEGER DEFAULT 1       e.g. ["apple","tiger","river"]    normalized      JSON NOT NULL
+created_at     TIMESTAMPTZ           status         STRING DEFAULT         e.g. ["apple","tiger","river"]
+ended_at       TIMESTAMPTZ NULL        'PENDING'                         is_correct      BOOLEAN NOT NULL
+                                        (PENDING | CORRECT | WRONG)      points_awarded  INTEGER DEFAULT 0
+                                     created_at     TIMESTAMPTZ          created_at      TIMESTAMPTZ
+```
+
+Relationships: `game_sessions` 1—* `rounds` (`cascade="all, delete-orphan"`),
+`rounds` 1—1 `responses` (same cascade). **The one constraint that matters
+most in an interview**: `UniqueConstraint("round_id")` on `responses` — the
+database physically cannot hold two scored responses for the same round,
+which is the real guarantee behind "avoid double-scoring" (§6.1 has the
+full race-condition story).
+
+**Exact API contract** (`app/api/routes.py`, all backed by the same
+`GameService` — §3.1):
+
+| Method | Path | Request body | Response model | Notes |
+|---|---|---|---|---|
+| `POST` | `/api/sessions` | `{player_name: str}` | `SessionState` | Creates `GameSession` + round 1 |
+| `GET` | `/api/sessions/{id}` | — | `SessionState` | Cache-first (Redis); `404` if unknown |
+| `POST` | `/api/sessions/{id}/answer` | `{transcript: str}` | `AnswerResult` | `409` if no active round (session already ended) |
+| `POST` | `/api/sessions/{id}/end` | — | `SessionState` | `404` if unknown; idempotent if already ended |
+| `GET` | `/api/leaderboard?limit=10` | — | `list[LeaderboardEntry]` | Cache-first; deduped by player (§10) |
+
+Response model shapes (`app/schemas.py`, Pydantic):
+
+```python
+SessionState:      session_id, player_name, status, score, current_round,
+                    round_id (opt), sequence_length (opt),
+                    last_expected (opt list), last_heard (opt list),
+                    last_correct (opt bool)
+                    # sequence_length is a length only — the *current*
+                    # unanswered sequence never appears in any API response.
+AnswerResult:       session_id, round_number, is_correct, points_awarded,
+                    total_score, status, expected (list), heard (list)
+                    # expected/heard ARE the actual words — but only ever
+                    # for the round just answered, revealed after the fact.
+LeaderboardEntry:   player_name, score
+```
+
+### 12.3 "Caching: active session state, current round state, leaderboard,
+or recently used sequences."
+
+**Exact structure** (`app/cache/store.py`, Redis via `redis-py`):
+
+| Key pattern | Value | TTL | Written by | Read by |
+|---|---|---|---|---|
+| `session:{session_id}` | JSON-serialized `SessionState.model_dump()` | 1800s (30 min) | `set_active_session()` — after every `start_session`/`submit_answer`/`end_session` | `get_active_session()` — first thing `GameService.get_state()` tries |
+| `leaderboard` | JSON-serialized `list[LeaderboardEntry.model_dump()]` | 60s | `set_leaderboard()` | `get_leaderboard()` — first thing `GameService.leaderboard()` tries |
+
+**Access pattern — cache-aside, not write-through for reads:**
+1. Read path: try Redis `GET` → on hit, deserialize and return immediately
+   (no Postgres touched at all). On miss (including a Redis *outage*, per
+   §5's resilience fix — treated identically to a miss), query Postgres,
+   then `SETEX` to warm the cache for the next read.
+2. Write path: Postgres is written first (it's the source of truth, inside
+   a transaction with the constraint from §12.2 enforcing correctness), only
+   *then* is the cache updated/invalidated — `set_active_session()` after a
+   successful commit, `invalidate_leaderboard()` whenever a score could have
+   changed (a round answered or a session ended).
+
+**Why these two specific keys, not "recently used sequences"**: the brief
+offers several options ("active session state, current round state,
+leaderboard, or recently used sequences") — this project picked active
+session state (the hottest read: polled every 1.5s per connected player,
+plus read on every voice turn) and the leaderboard (a classic
+read-heavy/write-light cache candidate) as the two with the clearest
+performance payoff. "Recently used sequences" wouldn't have needed caching
+here since `engine.generate_sequence()` is a pure, in-memory
+`random.sample()` call — cheaper than a cache round-trip would be.
