@@ -8,8 +8,9 @@ pydantic-settings==2.*
 sqlalchemy==2.*
 psycopg2-binary==2.9.*
 
-# cache
-cachetools==5.*
+# cache — Redis so active-session/leaderboard state is shared across worker
+# processes/instances, not just a single process's memory
+redis==5.*
 
 # voice (Pipecat + services). Pinned to the exact version verified against this repo.
 pipecat-ai[deepgram,groq,silero,webrtc]==0.0.108
@@ -18,3 +19,4 @@ pipecat-ai[deepgram,groq,silero,webrtc]==0.0.108
 pytest==8.*
 httpx==0.27.*        # FastAPI TestClient
 python-dotenv==1.*
+fakeredis==2.*       # in-memory Redis stand-in so tests never need a real Redis

@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg2://voiceflash:voiceflash@localhost:5433/voiceflash"
+    redis_url: str = "redis://localhost:6380/0"
     deepgram_api_key: str = ""
     groq_api_key: str = ""
     groq_model: str = "llama-3.1-8b-instant"
