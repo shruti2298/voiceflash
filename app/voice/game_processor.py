@@ -35,10 +35,13 @@ class MemoryGameProcessor(FrameProcessor):
     version, which this pipeline doesn't use).
     """
 
-    def __init__(self, player_name: str):
+    def __init__(self, player_name: str, session_id: str | None = None):
         super().__init__()
         self._player_name = player_name
-        self._session_id: str | None = None
+        # If a session_id is provided, it was already created via the REST
+        # API (POST /api/sessions) — reuse it instead of starting a second,
+        # disconnected session that the frontend's polling would never see.
+        self._session_id: str | None = session_id
         self._round_id: str | None = None
         self._buffer: list[str] = []
         self._turn_active = False
@@ -61,7 +64,12 @@ class MemoryGameProcessor(FrameProcessor):
         db = SessionLocal()
         try:
             svc = GameService(db)
-            state = svc.start_session(self._player_name)
+            if self._session_id:
+                # Resume the session the REST API already created, rather than
+                # starting a brand-new one the frontend never learns about.
+                state = svc.get_state(self._session_id)
+            else:
+                state = svc.start_session(self._player_name)
             seq = svc.get_current_sequence(state.session_id)
             return state, seq
         finally:

@@ -38,7 +38,7 @@ async function startGame() {
 
   const rtcRes = await fetch("/rtc/offer", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sdp: offer.sdp, type: offer.type, player_name: playerName }),
+    body: JSON.stringify({ sdp: offer.sdp, type: offer.type, player_name: playerName, session_id: sessionId }),
   });
   const answer = await rtcRes.json();
   await pc.setRemoteDescription(answer);
@@ -86,12 +86,25 @@ function renderState(s) {
   }
 
   renderCards(s.sequence_length);
+  renderLastRound(s);
 
   document.getElementById("mic-indicator").textContent = s.status === "ACTIVE" ? "🎤" : "🔇";
   document.getElementById("mic-label").textContent =
     s.status === "ACTIVE" ? "Listening…" : "Session ended";
 
   lastRound = s.current_round;
+}
+
+function renderLastRound(s) {
+  const panel = document.getElementById("last-round");
+  if (!s.last_expected) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  panel.className = "last-round " + (s.last_correct ? "correct" : "wrong");
+  document.getElementById("last-expected").textContent = s.last_expected.join(", ");
+  document.getElementById("last-heard").textContent = (s.last_heard || []).join(", ");
 }
 
 function renderCards(count) {

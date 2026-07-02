@@ -12,11 +12,11 @@ from app.config import settings
 from app.voice.game_processor import MemoryGameProcessor
 
 
-async def run_bot(transport, player_name: str = "Player"):
+async def run_bot(transport, player_name: str = "Player", session_id: str | None = None):
     stt = DeepgramSTTService(api_key=settings.deepgram_api_key)
     tts = DeepgramTTSService(api_key=settings.deepgram_api_key, voice="aura-asteria-en")
     llm = GroqLLMService(api_key=settings.groq_api_key, model=settings.groq_model)
-    game = MemoryGameProcessor(player_name=player_name)
+    game = MemoryGameProcessor(player_name=player_name, session_id=session_id)
 
     # Order matters: the game processor emits either an LLMMessagesFrame (host
     # banter -> llm -> tts) or a TTSSpeakFrame (exact sequence). Placing the LLM
