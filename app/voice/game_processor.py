@@ -2,7 +2,7 @@ import asyncio
 
 from pipecat.frames.frames import (
     Frame, LLMMessagesFrame, TTSSpeakFrame, TranscriptionFrame,
-    UserStartedSpeakingFrame, UserStoppedSpeakingFrame, StartInterruptionFrame,
+    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame, StartInterruptionFrame,
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
@@ -27,6 +27,12 @@ class MemoryGameProcessor(FrameProcessor):
     Two speech channels:
       * _speak()  -> TTSSpeakFrame  : deterministic, spoken verbatim (the sequence)
       * _banter() -> LLMMessagesFrame: Groq generates host personality lines
+
+    Turn boundaries: this pipeline has no LLMUserAggregator or turn_analyzer, so
+    the transport's VAD emits VADUserStartedSpeakingFrame / VADUserStoppedSpeakingFrame
+    (not the plain UserStartedSpeakingFrame/UserStoppedSpeakingFrame — those are only
+    pushed by the deprecated turn-analyzer/aggregator code path in this Pipecat
+    version, which this pipeline doesn't use).
     """
 
     def __init__(self, player_name: str):
@@ -124,7 +130,7 @@ class MemoryGameProcessor(FrameProcessor):
             # barge-in: drop the in-progress utterance and current turn state
             self._reset_turn()
 
-        elif isinstance(frame, UserStartedSpeakingFrame):
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
             self._buffer.clear()
             self._turn_active = True
             self._user_stopped = False
@@ -135,7 +141,7 @@ class MemoryGameProcessor(FrameProcessor):
             if self._user_stopped:
                 await self._finish_turn()
 
-        elif isinstance(frame, UserStoppedSpeakingFrame) and self._turn_active:
+        elif isinstance(frame, VADUserStoppedSpeakingFrame) and self._turn_active:
             self._user_stopped = True
             # if the final transcript already arrived, finish now;
             # otherwise wait for it in the TranscriptionFrame branch above
