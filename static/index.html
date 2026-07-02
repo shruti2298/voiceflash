@@ -69,13 +69,14 @@
     </section>
 
     <section id="setup" class="panel">
-      <label for="name">Who's playing?</label>
+      <label for="name">Who's playing? <span class="required-star">*</span></label>
       <div class="setup-row">
-        <input id="name" placeholder="Your name" value="Player" autocomplete="off" />
+        <input id="name" placeholder="Enter your name to begin" autocomplete="off" required maxlength="30" />
         <button id="start" class="btn btn-primary">
           <span class="btn-emoji">🎙️</span> Start voice game
         </button>
       </div>
+      <p id="name-error" class="error-message" hidden>👋 Enter your name first — the host needs something to call you!</p>
       <p class="hint">You'll be asked for mic access — that's the bot listening for your answers.</p>
     </section>
 

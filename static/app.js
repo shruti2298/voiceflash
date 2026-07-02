@@ -7,8 +7,27 @@ let lastRound = 1;
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
+function validatePlayerName() {
+  const input = document.getElementById("name");
+  const playerName = input.value.trim();
+  const errorEl = document.getElementById("name-error");
+
+  if (!playerName) {
+    input.classList.remove("input-error");
+    void input.offsetWidth; // restart the shake animation if triggered again
+    input.classList.add("input-error");
+    errorEl.hidden = false;
+    input.focus();
+    return null;
+  }
+  errorEl.hidden = true;
+  input.classList.remove("input-error");
+  return playerName;
+}
+
 async function startGame() {
-  const playerName = document.getElementById("name").value || "Player";
+  const playerName = validatePlayerName();
+  if (!playerName) return; // name is mandatory — don't start without one
 
   document.getElementById("setup").hidden = true;
   document.getElementById("connecting").hidden = false;
@@ -172,6 +191,7 @@ function playAgain() {
   document.getElementById("round").textContent = "—";
 
   document.getElementById("setup").hidden = false;
+  document.getElementById("name").focus();
 }
 
 async function refreshLeaderboard() {
@@ -224,9 +244,22 @@ function burstConfetti() {
   }
 }
 
+const nameInput = document.getElementById("name");
 document.getElementById("start").addEventListener("click", startGame);
 document.getElementById("end").addEventListener("click", endGame);
 document.getElementById("play-again").addEventListener("click", playAgain);
+nameInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") startGame();
+});
+nameInput.addEventListener("input", () => {
+  // Clear the error state as soon as they start fixing it, instead of
+  // leaving a stale red border/message up while they type.
+  if (nameInput.value.trim()) {
+    nameInput.classList.remove("input-error");
+    document.getElementById("name-error").hidden = true;
+  }
+});
+nameInput.focus(); // name is the very first thing you should type
 refreshLeaderboard();
 
 // ---- How to Play: collapsible panel + interactive step tabs ----

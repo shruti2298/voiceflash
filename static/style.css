@@ -85,6 +85,10 @@ main {
   color: #4a4160;
 }
 
+.required-star {
+  color: var(--red);
+}
+
 .setup-row {
   display: flex;
   gap: 10px;
@@ -99,11 +103,32 @@ input {
   border-radius: 12px;
   font-size: 1rem;
   outline: none;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 input:focus {
   border-color: var(--purple);
+}
+
+input.input-error {
+  border-color: var(--red);
+  animation: shake 0.35s ease;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+
+.error-message {
+  margin: 10px 0 0;
+  font-size: 0.85rem;
+  color: var(--red);
+  font-weight: 600;
+  animation: pop-in 0.25s ease;
 }
 
 .hint {
