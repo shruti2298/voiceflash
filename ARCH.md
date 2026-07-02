@@ -181,6 +181,24 @@ zero special handling; voice calls scale by routing, not by shared state.**
   resuming a session via the voice pipeline that the REST API already
   created, are both safe no-ops / correct resumes rather than errors — see
   `GameService.end_session` and `MemoryGameProcessor._start_session_sync`.
+- **Redis is an optimization, never a hard dependency.** Every function in
+  `app/cache/store.py` catches `redis.exceptions.RedisError`: reads degrade
+  to "cache miss" (falling back to Postgres), writes are best-effort and
+  simply log a warning. A Redis outage makes the app slower, never broken —
+  this was a real gap (found during a code review pass, not hypothetical)
+  that's now fixed and covered by `tests/test_cache.py`'s
+  `*_on_redis_outage` tests.
+- **An unrecognized `session_id` from a voice client no longer crashes the
+  call.** `MemoryGameProcessor._start_session_sync` used to let `KeyError`
+  propagate uncaught out of `asyncio.to_thread`, silently tearing down the
+  connection. It now catches that specific case and falls back to starting
+  a fresh session for that player — tested in
+  `tests/test_game_processor.py::test_start_session_sync_falls_back_when_session_id_unknown`.
+- **A turn no longer waits forever.** If VAD's stop signal never arrives
+  (e.g. persistent background noise), a watchdog
+  (`MemoryGameProcessor._turn_timeout_watchdog`) force-resolves the turn
+  after `_TURN_TIMEOUT_SECS` (8s) instead of leaving the round stuck in
+  silence indefinitely.
 
 ---
 
@@ -251,6 +269,12 @@ simply key-value and doesn't need locking for this access pattern).
 - **No rate limiting / abuse protection** on session creation — acceptable
   for the assignment's scope, would be a first addition before any public
   deployment.
+- **No ownership/auth on `session_id`.** Anything that knows a valid
+  `session_id` can act on that session via the REST API or a voice call —
+  there's no per-session secret or user account tying a session to whoever
+  created it. Deliberately not fixed alongside the other gaps in §5/§10,
+  because it's a real design decision (session tokens vs. full auth), not a
+  contained bug fix — see §10 for the fuller discussion.
 
 ---
 
@@ -502,10 +526,12 @@ Postgres only on a cache miss, then re-warms the cache.
 ### 9.5 Leaderboard
 
 `GET /api/leaderboard` → `GameService.leaderboard()` — cache-first against
-Redis (`get_leaderboard()`, 60s TTL); on miss, queries `GameSession` ordered
-by `score DESC, created_at ASC`, then calls `set_leaderboard()` to refresh
-the cache. Invalidated (`invalidate_leaderboard()`) by `submit_answer()` and
-`end_session()` whenever a score could have changed.
+Redis (`get_leaderboard()`, 60s TTL); on miss, queries `GameSession` **grouped
+by `player_name`, taking `MAX(score)`** (so a player who's played multiple
+sessions appears once, ranked by their best run — not once per session),
+tie-broken by `MIN(created_at) ASC`, then calls `set_leaderboard()` to
+refresh the cache. Invalidated (`invalidate_leaderboard()`) by
+`submit_answer()` and `end_session()` whenever a score could have changed.
 
 ### 9.6 Interruption / barge-in
 
@@ -535,29 +561,36 @@ the loser's `flush()`/`commit()` raises `IntegrityError`, caught in the
 ## 10. Grill questions to expect — with honest answers
 
 These are the follow-up questions an interviewer would actually ask after
-hearing §8's talking points. Several of the answers are **real gaps found
-while re-reading this exact code just now** — say them as gaps, not as
-solved problems; that honesty is worth more than a confident non-answer.
+hearing §8's talking points. A few were **real gaps found while re-reading
+this exact code**, and have since been fixed — narrated below as
+before/after, because "I found this, here's why it mattered, here's the fix
+and its test" is a stronger interview answer than either "it's perfect" or
+a static list of flaws.
 
 **Q: What happens if Redis goes down mid-game?**
-Right now: it breaks. `app/cache/store.py` has no try/except around any
-`_redis.*` call — `get_active_session`/`set_active_session`/etc. would raise
-a connection error straight up through `GameService`, surfacing as a 500 on
-every request and crashing the voice pipeline's background thread calls.
-The correct fix is a fallback-to-Postgres-on-cache-error path (treat Redis
-as an optimization, never a hard dependency for correctness) — not built
-here, and worth saying so directly.
+Originally: it broke everything. `app/cache/store.py` had no try/except
+around any `_redis.*` call, so a connection error would raise straight up
+through `GameService`, surfacing as a 500 on every cache-touching request
+and crashing the voice pipeline's background thread calls too. **Fixed**:
+every function in `store.py` now catches `redis.exceptions.RedisError` —
+reads degrade to "cache miss" (Postgres is the fallback, already the
+correct behavior `GameService.get_state` expected for ordinary misses),
+writes are best-effort and just log a warning. Covered by
+`tests/test_cache.py`'s `test_*_on_redis_outage` tests, which simulate a
+Redis client where every call raises. Redis is now genuinely an
+optimization, never a hard dependency for correctness.
 
 **Q: What happens if a client sends a `session_id` in `/rtc/offer` that
 doesn't exist?**
-Also breaks ungracefully today: `MemoryGameProcessor._start_session_sync()`
-calls `GameService.get_state()` with no try/except; `get_state` raises
-`KeyError` for an unknown session, which propagates out of
-`asyncio.to_thread` uncaught, likely tearing down that voice connection
-without ever telling the user why. The fix would be to catch `KeyError`
-there and fall back to `start_session()` (or reject the call cleanly) —
-same category of gap as the Redis one: an internal invariant that isn't
-defensively checked at a trust boundary.
+Originally: also broke ungracefully. `MemoryGameProcessor._start_session_sync()`
+called `GameService.get_state()` with no try/except; `get_state` raises
+`KeyError` for an unknown session, which propagated out of
+`asyncio.to_thread` uncaught, tearing down that voice connection without
+ever telling the user why. **Fixed**: that specific `KeyError` is now
+caught, logged as a warning, and falls back to starting a fresh session for
+that player — the call degrades to "you get a new game" instead of dying.
+Covered by
+`tests/test_game_processor.py::test_start_session_sync_falls_back_when_session_id_unknown`.
 
 **Q: Why is there no ownership/auth check tying a `session_id` to the
 browser that created it? Could I steal someone else's session?**
@@ -605,11 +638,32 @@ actually changes.
 
 **Q: What happens if the user never stops talking — does the round hang
 forever?**
-Yes, currently. `game_processor.py`'s turn-finishing logic only fires once a
-stop signal arrives; if the VAD analyzer never detects silence (e.g.,
-continuous background noise), the turn simply waits with no timeout. The
-fix is a max-turn-duration timer that force-finishes the turn — not
-implemented here.
+Originally: yes. `game_processor.py`'s turn-finishing logic only fired once
+a stop signal arrived; if VAD never detected silence (e.g. continuous
+background noise), the turn simply waited forever with no feedback.
+**Fixed**: `_turn_timeout_watchdog()` starts an 8-second timer whenever a
+turn begins (`_TURN_TIMEOUT_SECS`), cancelled if the turn finishes normally;
+if it fires, it force-resolves the turn with whatever's been heard so far.
+Writing its test surfaced a second, subtler bug: the watchdog calling
+`_finish_turn()` → `_reset_turn()` → `_cancel_turn_timeout()` would cancel
+*itself* (it's running inside that very task), raising `CancelledError` out
+of the turn it had just resolved. Fixed by checking
+`task is not asyncio.current_task()` before cancelling — a good concrete
+example of a self-referential concurrency bug that only shows up once you
+actually write the test instead of reasoning about it on paper.
+
+**Q: The leaderboard showed the same player multiple times — why, and how
+was it fixed?**
+`GameService.leaderboard()` originally queried `GameSession` rows directly
+with no grouping — since a player can start a new session every time they
+play, a player who'd played 3 times showed up as 3 separate leaderboard
+rows instead of one. **Fixed**: the query now groups by `player_name` and
+takes `MAX(score)`, so each player appears exactly once, ranked by their
+personal best. This is the same "session-per-play vs. identity-per-player"
+modeling gap that shows up constantly in real systems — the schema
+(`GameSession` rows) models *attempts*, but the leaderboard needs to answer
+a question about *players*, and conflating the two is an easy, easy-to-miss
+bug.
 
 **Q: Why does `engine.normalize()` strip filler words like "the"/"um" —
 what could that break?**

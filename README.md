@@ -266,6 +266,16 @@ processes/instances share the same view** of active sessions and the leaderboard
 real Redis: `tests/conftest.py` swaps in `fakeredis` (an in-memory stand-in with the same
 wire protocol) via an autouse fixture.
 
+**Redis is an optimization, not a hard dependency.** Every function in `app/cache/store.py`
+catches `redis.exceptions.RedisError`: reads degrade to "cache miss" (so `GameService` falls
+back to Postgres), and writes are best-effort (a failed cache write is logged and swallowed,
+never raised). A Redis outage makes the app slower — every request round-trips to Postgres —
+but never breaks it.
+
+**The leaderboard shows one entry per player, not per session.** `GameService.leaderboard()`
+groups by `player_name` and takes each player's `MAX(score)` across all the sessions they've
+ever played, so replaying doesn't produce duplicate rows — you always see your *best* run.
+
 ## Avoiding double-scoring
 
 `GameService.submit_answer` checks whether the target `Round` already has a stored
@@ -322,10 +332,20 @@ scale behind a plain load balancer with no special routing.
 ## Voice pipeline notes
 
 - **Turn-taking:** Deepgram's final transcript frequently arrives *after* the transport's
-  VAD emits `UserStoppedSpeakingFrame`. `MemoryGameProcessor` finishes a turn on whichever of
-  the two arrives last, so it never evaluates against an empty buffer.
-- **Interruptions:** on `StartInterruptionFrame` (barge-in), the processor drops the
-  in-progress turn state so an interrupted utterance is never partially scored.
+  VAD emits `VADUserStoppedSpeakingFrame`. `MemoryGameProcessor` finishes a turn on whichever
+  of the two arrives last, so it never evaluates against an empty buffer.
+- **A turn no longer hangs forever.** If VAD's stop signal never arrives at all (e.g. noisy
+  audio prevents clean silence detection), a watchdog force-resolves the turn after 8 seconds,
+  evaluating whatever was heard so far instead of leaving the round stuck in silence with no
+  feedback.
+- **Interruptions:** this Pipecat version never emits `StartInterruptionFrame` on its own
+  without a `turn_analyzer`/`LLMUserAggregator` (which this minimal pipeline intentionally
+  doesn't use). `MemoryGameProcessor` tracks whether the bot is currently speaking and, when
+  VAD detects the user talking over it, calls the framework's own `broadcast_interruption()`
+  directly — that's what actually stops the in-flight TTS/audio.
+- **Resuming a session that doesn't exist.** If the client sends a `session_id` the server
+  doesn't recognize (stale, tampered with), the voice pipeline no longer crashes the call with
+  an uncaught error — it logs a warning and starts a fresh session for that player instead.
 - **Validation vs. the LLM:** the exact word sequence is always spoken via a plain
   `TTSSpeakFrame`, which passes through the LLM stage of the pipeline untouched. Only host
   *personality* (greetings, reactions, game-over lines) goes through Groq via
