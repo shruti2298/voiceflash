@@ -1,5 +1,6 @@
 from typing import List, Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.cache import store
@@ -96,17 +97,31 @@ class GameService:
         self.db.add(response)
         rnd.status = "CORRECT" if ev.is_correct else "WRONG"
 
-        if ev.is_correct:
-            session.score += ev.points
-            session.current_round += 1
-            self.db.flush()
-            self._new_round(session)            # prepare the next round
-        else:
-            session.status = "ENDED"
-            from datetime import datetime, timezone
-            session.ended_at = datetime.now(timezone.utc)
+        try:
+            if ev.is_correct:
+                session.score += ev.points
+                session.current_round += 1
+                self.db.flush()                  # may raise IntegrityError — see except below
+                self._new_round(session)            # prepare the next round
+            else:
+                session.status = "ENDED"
+                from datetime import datetime, timezone
+                session.ended_at = datetime.now(timezone.utc)
 
-        self.db.commit()
+            self.db.commit()
+        except IntegrityError:
+            # Lost a race: another request already committed a Response for
+            # this round between our read and our write (the DB's unique
+            # constraint on round_id is what actually caught it — possibly
+            # during the flush() above, not just at commit()). Roll back our
+            # own attempt and return the winning result instead of surfacing
+            # a 500 — same contract as the idempotency guard above, just
+            # reached via a different path (a stale read instead of a
+            # sequential resubmission).
+            self.db.rollback()
+            session = self.db.get(models.GameSession, session_id)
+            rnd = self.db.get(models.Round, round_id)
+            return self._result_from_stored(session, rnd)
 
         # refresh caches
         if session.status == "ACTIVE":

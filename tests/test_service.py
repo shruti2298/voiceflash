@@ -1,3 +1,4 @@
+from app.db import models
 from app.game.service import GameService
 from app.cache import store
 
@@ -87,3 +88,36 @@ def test_leaderboard_orders_by_score_and_caches(db):
     lb = svc.leaderboard(limit=10)
     assert lb[0].player_name == "Jo"
     assert store.get_leaderboard() is not None      # now cached
+
+
+def test_submit_answer_recovers_from_concurrent_insert_conflict(db):
+    store.clear_all()
+    svc = GameService(db)
+    started = svc.start_session("Race")
+    seq = svc.get_current_sequence(started.session_id)
+    transcript = " ".join(seq)
+
+    # Simulate a concurrent request that reads the round while it's still
+    # PENDING (same as this request is about to), then wins the race by
+    # committing its own Response + score update first. We insert directly at
+    # the DB layer rather than through GameService, and deliberately leave
+    # Round.status as "PENDING" — that mirrors the actual race window: this
+    # request's local view of the round is stale relative to the winner's
+    # commit, so its own idempotency check (which only looks at *this*
+    # request's already-fetched Round) won't short-circuit.
+    session_row = db.get(models.GameSession, started.session_id)
+    db.add(models.Response(
+        round_id=started.round_id, transcript=transcript,
+        normalized=seq, is_correct=True, points_awarded=30,
+    ))
+    session_row.score = 30
+    session_row.current_round = 2
+    db.commit()
+
+    # This call must not raise (no unhandled IntegrityError / 500) — it should
+    # detect the conflicting insert and gracefully return the winning result.
+    result = svc.submit_answer(started.session_id, started.round_id, transcript)
+
+    assert result.is_correct is True
+    assert result.points_awarded == 30
+    assert result.total_score == 30
