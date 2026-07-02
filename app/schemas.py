@@ -17,7 +17,13 @@ class SessionState(BaseModel):
     score: int
     current_round: int
     round_id: Optional[str] = None
-    sequence_length: Optional[int] = None   # length only; never leak the words to the UI
+    sequence_length: Optional[int] = None   # length only; never leak the *current* words to the UI
+    # The most recently answered round's words — only ever the round already
+    # answered, never the pending one, so this doesn't leak an unanswered
+    # sequence. None until the first answer is submitted.
+    last_expected: Optional[List[str]] = None
+    last_heard: Optional[List[str]] = None
+    last_correct: Optional[bool] = None
 
 
 class AnswerResult(BaseModel):

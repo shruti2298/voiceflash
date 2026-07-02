@@ -57,6 +57,39 @@ def test_wrong_answer_ends_game(db):
     assert res.status == "ENDED"
     assert svc.get_state(started.session_id).status == "ENDED"
 
+
+def test_state_exposes_last_round_result_after_correct_answer(db):
+    store.clear_all()
+    svc = GameService(db)
+    started = svc.start_session("Words")
+    seq = svc.get_current_sequence(started.session_id)
+    svc.submit_answer(started.session_id, started.round_id, " ".join(seq))
+
+    state = svc.get_state(started.session_id)
+    assert state.last_expected == seq
+    assert state.last_heard == seq
+    assert state.last_correct is True
+
+def test_state_exposes_last_round_result_after_wrong_answer(db):
+    store.clear_all()
+    svc = GameService(db)
+    started = svc.start_session("Words2")
+    seq = svc.get_current_sequence(started.session_id)
+    svc.submit_answer(started.session_id, started.round_id, "totally wrong")
+
+    state = svc.get_state(started.session_id)
+    assert state.last_expected == seq
+    assert state.last_heard == ["totally", "wrong"]
+    assert state.last_correct is False
+
+def test_state_has_no_last_round_before_any_answer(db):
+    store.clear_all()
+    svc = GameService(db)
+    started = svc.start_session("Fresh")
+    assert started.last_expected is None
+    assert started.last_heard is None
+    assert started.last_correct is None
+
 def test_double_submission_is_idempotent(db):
     store.clear_all()
     svc = GameService(db)

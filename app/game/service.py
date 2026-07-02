@@ -23,8 +23,21 @@ class GameService:
             .one_or_none()
         )
 
+    def _last_answered_round(self, session: models.GameSession) -> Optional[models.Round]:
+        """Most recently answered round (correct or wrong), for showing the
+        player what was expected/heard after a round resolves. None before
+        the first answer of the session."""
+        return (
+            self.db.query(models.Round)
+            .join(models.Response, models.Response.round_id == models.Round.id)
+            .filter(models.Round.session_id == session.id)
+            .order_by(models.Round.round_number.desc())
+            .first()
+        )
+
     def _state(self, session: models.GameSession) -> SessionState:
         rnd = self._current_round(session) if session.status == "ACTIVE" else None
+        last = self._last_answered_round(session)
         state = SessionState(
             session_id=session.id,
             player_name=session.player_name,
@@ -33,6 +46,9 @@ class GameService:
             current_round=session.current_round,
             round_id=rnd.id if rnd else None,
             sequence_length=len(rnd.sequence) if rnd else None,
+            last_expected=list(last.sequence) if last else None,
+            last_heard=list(last.response.normalized) if last else None,
+            last_correct=last.response.is_correct if last else None,
         )
         return state
 
