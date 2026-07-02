@@ -194,11 +194,14 @@ zero special handling; voice calls scale by routing, not by shared state.**
   connection. It now catches that specific case and falls back to starting
   a fresh session for that player — tested in
   `tests/test_game_processor.py::test_start_session_sync_falls_back_when_session_id_unknown`.
-- **A turn no longer waits forever.** If VAD's stop signal never arrives
-  (e.g. persistent background noise), a watchdog
-  (`MemoryGameProcessor._turn_timeout_watchdog`) force-resolves the turn
-  after `_TURN_TIMEOUT_SECS` (8s) instead of leaving the round stuck in
-  silence indefinitely.
+- **A turn no longer waits forever — and the timeout scales with how much
+  there is to say.** If VAD's stop signal never arrives (e.g. persistent
+  background noise), a watchdog (`MemoryGameProcessor._turn_timeout_watchdog`)
+  force-resolves the turn instead of leaving the round stuck in silence
+  indefinitely. `_turn_timeout_for(sequence_length)` = 6s base + 2.5s per
+  word — a flat timeout was found to cut players off mid-answer on longer,
+  harder rounds (a 6-word sequence legitimately takes longer to say than a
+  3-word one), so round 1 gets ~13.5s while round 4 gets ~21s.
 
 ---
 

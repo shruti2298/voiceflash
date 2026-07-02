@@ -334,10 +334,12 @@ scale behind a plain load balancer with no special routing.
 - **Turn-taking:** Deepgram's final transcript frequently arrives *after* the transport's
   VAD emits `VADUserStoppedSpeakingFrame`. `MemoryGameProcessor` finishes a turn on whichever
   of the two arrives last, so it never evaluates against an empty buffer.
-- **A turn no longer hangs forever.** If VAD's stop signal never arrives at all (e.g. noisy
-  audio prevents clean silence detection), a watchdog force-resolves the turn after 8 seconds,
-  evaluating whatever was heard so far instead of leaving the round stuck in silence with no
-  feedback.
+- **A turn no longer hangs forever — and harder rounds get more time to answer.** If VAD's
+  stop signal never arrives at all (e.g. noisy audio prevents clean silence detection), a
+  watchdog force-resolves the turn instead of leaving the round stuck in silence with no
+  feedback. The timeout scales with the round's sequence length (6s base + 2.5s per word), so
+  round 1's 3-word sequence gets ~13.5s while round 4's 6-word sequence gets ~21s — a flat
+  timeout was cutting players off mid-answer on longer, harder sequences.
 - **Interruptions:** this Pipecat version never emits `StartInterruptionFrame` on its own
   without a `turn_analyzer`/`LLMUserAggregator` (which this minimal pipeline intentionally
   doesn't use). `MemoryGameProcessor` tracks whether the bot is currently speaking and, when
