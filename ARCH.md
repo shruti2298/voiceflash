@@ -671,9 +671,11 @@ It's a precision/recall trade-off for STT noise. If a real target word were
 ever one of the filler words (currently: `um, uh, the, a, an, and, then,
 was, is, please, okay`), it would be silently un-checkable — always
 stripped before comparison. In this project it's safe because the word pool
-(`app/game/words.py`) is curated to never include those words, but that's an
-implicit invariant between two files, not enforced by any test or
-assertion.
+(`app/game/words.py`) is curated to never include those words — this used to
+be an implicit, undocumented invariant between two files; it's now enforced
+by `tests/test_engine.py::test_word_pool_never_overlaps_filler_words`, so
+adding a word like "the" to the pool by accident would fail CI instead of
+silently breaking gameplay.
 
 **Q: The leaderboard cache is 60 seconds, the session cache is 30 minutes —
 how were those numbers chosen?**
@@ -683,3 +685,91 @@ without letting abandoned sessions accumulate in Redis forever; 60 seconds
 keeps the leaderboard feeling near-live without hitting Postgres on every
 single leaderboard view). Be ready to say exactly that if pressed — these
 weren't load-tested.
+
+**Q: How would you actually test that this holds up with multiple
+concurrent voice users, given you don't have a fleet of phones or
+microphones sitting around?**
+Two different tools for two different layers, and it's worth being explicit
+about which one tests what — see §11 for the full walkthrough:
+- The backend's concurrency correctness (Postgres, Redis, the race-condition
+  fix in §6.1) is testable with **pure automated load** — fire many
+  simultaneous `POST /api/sessions` + `/answer` requests with `asyncio`/
+  `httpx` against a running server. No microphone involved, and it's exactly
+  what `tests/test_service.py::test_submit_answer_recovers_from_concurrent_insert_conflict`
+  already does at the unit level, just scaled up against a live server
+  instead of monkeypatched in-process.
+- The **voice-specific** concurrency question — do two simultaneous
+  real-time STT/TTS streams interfere with each other — genuinely needs live
+  audio, and has a physical constraint that's easy to miss until you try it:
+  on one device, multiple browser tabs share the **same physical
+  microphone**, so both bots hear whatever's said in the room regardless of
+  which tab has focus. That's not a server bug, it's a property of testing
+  voice systems specifically (unlike testing a typical REST API, where a
+  second "client" is just another terminal). The real test needs either two
+  separate devices/mics, or turn-taking discipline on one device.
+
+---
+
+## 11. Testing multi-user scenarios in practice
+
+Two genuinely different tests, testing two different layers. Conflating
+them (e.g. concluding "it handles concurrency" from only one of the two) is
+the mistake to avoid.
+
+### 11.1 Backend concurrency — automatable, no microphone needed
+
+This is the layer §6 is about: does the database/cache stay correct under
+simultaneous writers. Drive it with plain async HTTP load against a running
+server:
+
+```python
+import asyncio, httpx
+
+async def play_one(client, name):
+    r = await client.post("/api/sessions", json={"player_name": name})
+    sid = r.json()["session_id"]
+    # ... fetch the real sequence from Postgres directly for a correct
+    # answer, or just submit garbage to exercise the wrong-answer/game-over
+    # path — either way, do this from N concurrent coroutines:
+    return await client.post(f"/api/sessions/{sid}/answer",
+                              json={"transcript": "..."})
+
+async def main():
+    async with httpx.AsyncClient(base_url="http://127.0.0.1:8000") as client:
+        results = await asyncio.gather(*[play_one(client, f"p{i}") for i in range(50)])
+```
+
+What to check afterward: every session's score in Postgres matches what its
+own answers should have produced (no cross-contamination), the leaderboard
+has exactly one row per name (§10's dedup fix), and Redis
+(`redis-cli KEYS "session:*"`) has one key per session with no signs of a
+crashed process (which the resilience fixes in §5 specifically guard
+against).
+
+### 11.2 Voice-specific concurrency — needs real audio, has a physical constraint
+
+This is the layer that's actually hard to fake: do two simultaneous
+real-time Deepgram STT/TTS streams (§3.2, §8.2) interfere with each other,
+and does turn-taking/barge-in stay correct per-connection when two are
+live at once.
+
+- **Best: two separate devices on the same network**, each with its own
+  microphone, both pointed at `http://<host-LAN-IP>:8000`. This is the only
+  setup that tests truly simultaneous independent speech.
+- **One device, multiple tabs**: works for proving connections/sessions
+  stay independent server-side, but **all tabs share the one physical
+  microphone** — whatever's said in the room reaches every open tab's STT
+  pipeline, not just the "active" one. Not a bug in this codebase; it's an
+  inherent property of testing voice systems on shared hardware, unlike a
+  typical REST API where a second terminal is a fully independent client.
+  Practical workaround with no code changes: strict turn-taking (only one
+  person speaks at a time, alternating which tab they're "talking to").
+- **One device, genuinely simultaneous speech**: needs two physical input
+  devices (e.g. the laptop's built-in mic + a USB/headset mic) *and* a
+  frontend change this codebase doesn't have yet — `static/app.js` calls
+  `getUserMedia({ audio: true })` with no device selection, so every tab
+  gets whichever mic the OS/browser defaults to. Supporting this would mean
+  enumerating `navigator.mediaDevices.enumerateDevices()` and letting each
+  tab pick a specific `deviceId` — a small, well-scoped addition if this
+  becomes a recurring testing need, not built because it wasn't needed for
+  the assignment's scope.
