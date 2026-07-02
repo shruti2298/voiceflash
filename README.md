@@ -175,6 +175,59 @@ pytest -v
 
 ---
 
+## How to play
+
+1. Open **http://localhost:8000**.
+2. Type your name (or keep "Player") and click **🎙️ Start voice game**.
+3. Your browser will ask for **microphone access** — allow it. That's the bot listening
+   for your spoken answers, not a recording that gets saved anywhere.
+4. Wait a moment while it connects (you'll see a spinner), then the host greets you and
+   speaks a short sequence of words.
+5. **Repeat the sequence back out loud, in order**, then stop talking — the bot waits
+   until you're actually done before it judges you (see [Turn-taking](#voice-pipeline-notes)).
+6. Get it right → you score points and the *next* sequence is one word longer.
+   Get it wrong → the game ends and your final score is shown.
+7. Click **🏳️ End game** any time to stop early and lock in your current score.
+8. Try **talking over the bot** while it's mid-sentence — it should stop cleanly and
+   let you answer instead of ignoring you or getting confused. That's the
+   interruption-handling requirement in action.
+
+### What a round actually sounds like
+
+```
+🤖 Bot:  "Hey Alex! Let's kick off round 1 of Memory Card."
+🤖 Bot:  "Repeat after me: apple, tiger, river."
+🗣️ You:  "Apple, tiger, river."
+🤖 Bot:  "Correct! That's 30 points. Nice start — round 2 coming up!"
+🤖 Bot:  "Repeat after me: guitar, planet, candle, rocket."
+🗣️ You:  "Guitar, planet... rocket?"                          ← missed a word
+🤖 Bot:  "Ohh, so close! Game over — you finished with 30 points."
+```
+
+Only the sequence lines ("Repeat after me: …") are ever spoken word-for-word by a fixed
+script — those are never touched by the LLM. Everything else the bot says (greetings,
+reactions, the game-over line) is generated on the fly by Groq so it doesn't feel scripted,
+but it never decides whether you were *right* — that judgment always comes from
+`engine.evaluate()` comparing your transcript to the exact sequence in the database.
+
+### Reading the screen while you play
+
+| You see | It means |
+|---|---|
+| 🟢 pulsing **● ACTIVE** badge | Your session is live and the bot is expecting an answer |
+| 🔴 **● ENDED** badge | Game over — either you missed a sequence or clicked "End game" |
+| Row of little gradient cards | How many words are in the *current* sequence — grows every round |
+| Score number "bumping" bigger | You just scored — confetti means you got it right |
+| Pulsing 🎤 | The bot is actively listening for your voice |
+| 🏆 Leaderboard with medals | Top finished sessions across everyone who's played, ranked by score |
+
+If you want to sanity-check the game without talking to it, the same `POST
+/api/sessions/{id}/answer` endpoint the tests use also works from a REST client (see
+[API reference](#api-reference)) — handy for demoing the "no double-scoring" behavior by
+submitting the same round twice and seeing the score not change the second time.
+
+---
+
 ## API reference
 
 | Method | Path | Description |
