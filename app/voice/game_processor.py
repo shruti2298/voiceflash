@@ -23,8 +23,16 @@ HOST_SYSTEM = {
 
 # If VAD never signals the user stopped talking (e.g. noisy audio prevents
 # clean silence detection), force the turn to resolve instead of waiting
-# forever — see MemoryGameProcessor._turn_timeout_watchdog.
-_TURN_TIMEOUT_SECS = 8.0
+# forever — see MemoryGameProcessor._turn_timeout_watchdog. Scaled by the
+# sequence length so harder (longer) rounds get proportionally more time:
+# saying 6-8 words obviously takes longer than saying 3, and a flat timeout
+# would cut off a player who's still legitimately mid-answer on later rounds.
+_TURN_TIMEOUT_BASE_SECS = 6.0
+_TURN_TIMEOUT_PER_WORD_SECS = 2.5
+
+
+def _turn_timeout_for(sequence_length: int) -> float:
+    return _TURN_TIMEOUT_BASE_SECS + _TURN_TIMEOUT_PER_WORD_SECS * max(sequence_length, 1)
 
 
 class MemoryGameProcessor(FrameProcessor):
@@ -62,6 +70,7 @@ class MemoryGameProcessor(FrameProcessor):
         self._user_stopped = False
         self._bot_speaking = False
         self._turn_timeout_task: asyncio.Task | None = None
+        self._current_sequence_length = 0
 
     # ---- speech helpers -------------------------------------------------
     async def _speak(self, text: str):
@@ -119,6 +128,7 @@ class MemoryGameProcessor(FrameProcessor):
     async def _start_game(self):
         state, seq = await asyncio.to_thread(self._start_session_sync)
         self._session_id, self._round_id = state.session_id, state.round_id
+        self._current_sequence_length = len(seq)
         await self._banter(
             f"Greet the player named {self._player_name} and announce we're starting "
             f"round {state.current_round} of Memory Card."
@@ -136,6 +146,7 @@ class MemoryGameProcessor(FrameProcessor):
             self._session_id = None
             return
         self._round_id = state.round_id
+        self._current_sequence_length = len(seq)
         await self._banter(
             f"Correct! The player earned {result.points_awarded} points for a total of "
             f"{result.total_score}. React with excitement and tell them round "
@@ -175,9 +186,12 @@ class MemoryGameProcessor(FrameProcessor):
         Without this, noisy audio that prevents clean silence detection would
         leave the round waiting forever — the player's answer would sit in
         the buffer, never evaluated, with no feedback from the bot at all.
+        The timeout scales with the current round's sequence length (see
+        _turn_timeout_for) so longer, harder sequences get proportionally
+        more time to actually say out loud before being force-finished.
         """
         try:
-            await asyncio.sleep(_TURN_TIMEOUT_SECS)
+            await asyncio.sleep(_turn_timeout_for(self._current_sequence_length))
         except asyncio.CancelledError:
             return
         if self._turn_active:

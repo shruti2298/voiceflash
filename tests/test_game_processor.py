@@ -56,8 +56,18 @@ def test_start_session_sync_falls_back_when_session_id_unknown(sqlite_session_lo
     assert len(seq) == 3
 
 
+def test_turn_timeout_scales_with_sequence_length():
+    # Longer (harder) sequences must get more time to say out loud, not the
+    # same flat timeout regardless of round difficulty.
+    short = gp_module._turn_timeout_for(3)
+    long = gp_module._turn_timeout_for(6)
+    assert long > short
+    assert long - short == pytest.approx(gp_module._TURN_TIMEOUT_PER_WORD_SECS * 3)
+
+
 def test_turn_watchdog_force_finishes_when_stop_signal_never_arrives(sqlite_session_local, monkeypatch):
-    monkeypatch.setattr(gp_module, "_TURN_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(gp_module, "_TURN_TIMEOUT_BASE_SECS", 0.05)
+    monkeypatch.setattr(gp_module, "_TURN_TIMEOUT_PER_WORD_SECS", 0.0)
 
     processor = MemoryGameProcessor(player_name="Slowpoke")
     spoken = []
@@ -89,7 +99,8 @@ def test_turn_watchdog_force_finishes_when_stop_signal_never_arrives(sqlite_sess
     assert spoken  # the forced finish evaluated the answer and spoke a reaction
 
 def test_turn_watchdog_does_not_fire_if_turn_finishes_normally(sqlite_session_local, monkeypatch):
-    monkeypatch.setattr(gp_module, "_TURN_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(gp_module, "_TURN_TIMEOUT_BASE_SECS", 0.05)
+    monkeypatch.setattr(gp_module, "_TURN_TIMEOUT_PER_WORD_SECS", 0.0)
 
     processor = MemoryGameProcessor(player_name="Quickdraw")
     processor._speak = lambda text: asyncio.sleep(0)
