@@ -235,6 +235,22 @@ If you want to sanity-check the game without talking to it, the same `POST
 [API reference](#api-reference)) — handy for demoing the "no double-scoring" behavior by
 submitting the same round twice and seeing the score not change the second time.
 
+### Refreshing the page mid-game
+
+Refreshing (or accidentally closing) the tab doesn't lose your game. On reload, the page
+checks for a saved, still-`ACTIVE` session and shows a **"Welcome back!"** banner with your
+current round/score, offering:
+
+- **Resume game** — reconnects the mic/voice to that exact session and continues from
+  wherever you left off.
+- **Start fresh instead** — properly ends the old session (so it doesn't sit around forever
+  as an unfinished row) and takes you to a new game.
+
+This is saved in `sessionStorage`, not `localStorage`, deliberately — it's per-tab, so if
+you're testing two players on one device in separate tabs (see
+[Concurrency & multi-user notes](#concurrency--multi-user-notes)), each tab tracks its own
+session independently instead of fighting over the same saved ID.
+
 ---
 
 ## API reference

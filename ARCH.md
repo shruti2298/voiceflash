@@ -202,6 +202,14 @@ zero special handling; voice calls scale by routing, not by shared state.**
   word — a flat timeout was found to cut players off mid-answer on longer,
   harder rounds (a 6-word sequence legitimately takes longer to say than a
   3-word one), so round 1 gets ~13.5s while round 4 gets ~21s.
+- **A page refresh no longer loses the game.** `static/app.js` saves the
+  active `session_id` to `sessionStorage` and checks it on load; if that
+  session is still `ACTIVE` server-side, a "Welcome back" banner offers
+  resuming (reconnects voice to the *same* session, using the exact
+  session-linking mechanism from §6.3) or explicitly ending the old session
+  via `POST /api/sessions/{id}/end` before starting fresh — closing the gap
+  where an abandoned session used to sit as an orphaned `ACTIVE` row in
+  Postgres forever.
 
 ---
 
@@ -688,6 +696,20 @@ without letting abandoned sessions accumulate in Redis forever; 60 seconds
 keeps the leaderboard feeling near-live without hitting Postgres on every
 single leaderboard view). Be ready to say exactly that if pressed — these
 weren't load-tested.
+
+**Q: What happens if I refresh the page mid-game?**
+Originally: the game was silently lost. `sessionId` lived only in a JS
+variable, so a refresh forgot it completely — the frontend had no way back
+to that session, and the old `GameSession` row just sat in Postgres forever,
+still `ACTIVE`, never explicitly ended. **Fixed**: the session ID is saved
+to `sessionStorage` (per-tab — deliberately not `localStorage`, so it
+doesn't collide with the two-tabs-one-device testing workflow from §11) and
+checked on load. If that session is still `ACTIVE`, the player gets a
+"Welcome back" choice: resume (reconnect voice to the same session — this
+works *because* of the session-linking fix in §6.3, which already made the
+backend able to resume an existing session_id) or explicitly end the old
+one via the real API before starting fresh, so nothing gets abandoned
+silently anymore.
 
 **Q: How would you actually test that this holds up with multiple
 concurrent voice users, given you don't have a fleet of phones or
