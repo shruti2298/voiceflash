@@ -6,6 +6,18 @@ let lastScore = 0;
 let lastRound = 1;
 
 const MEDALS = ["🥇", "🥈", "🥉"];
+// sessionStorage (not localStorage) deliberately: it's per-tab, so refreshing
+// THIS tab can resume THIS tab's game, without two tabs open at once (e.g.
+// for testing two players on one device) fighting over the same saved id.
+const SESSION_STORAGE_KEY = "voiceflash_session_id";
+
+function saveSession(id) {
+  sessionStorage.setItem(SESSION_STORAGE_KEY, id);
+}
+
+function clearSavedSession() {
+  sessionStorage.removeItem(SESSION_STORAGE_KEY);
+}
 
 function validatePlayerName() {
   const input = document.getElementById("name");
@@ -25,24 +37,11 @@ function validatePlayerName() {
   return playerName;
 }
 
-async function startGame() {
-  const playerName = validatePlayerName();
-  if (!playerName) return; // name is mandatory — don't start without one
+async function connectVoice(theSessionId, playerName) {
+  sessionId = theSessionId;
+  saveSession(sessionId);
 
-  document.getElementById("setup").hidden = true;
-  document.getElementById("connecting").hidden = false;
-
-  // 1) create a session via the REST API (also warms cache + DB)
-  const res = await fetch("/api/sessions", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ player_name: playerName }),
-  });
-  const state = await res.json();
-  sessionId = state.session_id;
-  lastScore = state.score;
-  lastRound = state.current_round;
-
-  // 2) open mic + WebRTC to the bot
+  // open mic + WebRTC to the bot
   pc = new RTCPeerConnection();
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
@@ -55,6 +54,9 @@ async function startGame() {
   const offer = await pc.createOffer({ offerToReceiveAudio: true });
   await pc.setLocalDescription(offer);
 
+  // session_id here is what makes this reusable for both a fresh session
+  // AND resuming an existing one — the backend resumes whatever session_id
+  // it's given instead of always starting a new one.
   const rtcRes = await fetch("/rtc/offer", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sdp: offer.sdp, type: offer.type, player_name: playerName, session_id: sessionId }),
@@ -64,11 +66,79 @@ async function startGame() {
 
   document.getElementById("connecting").hidden = true;
   document.getElementById("game").hidden = false;
-  renderState(state);
 
-  // 3) poll game state so the UI reflects rounds/score as they change
+  // poll game state so the UI reflects rounds/score as they change
   pollTimer = setInterval(refreshState, 1500);
   refreshLeaderboard();
+}
+
+async function startGame() {
+  const playerName = validatePlayerName();
+  if (!playerName) return; // name is mandatory — don't start without one
+
+  document.getElementById("resume").hidden = true;
+  document.getElementById("setup").hidden = true;
+  document.getElementById("connecting").hidden = false;
+
+  // create a session via the REST API (also warms cache + DB)
+  const res = await fetch("/api/sessions", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ player_name: playerName }),
+  });
+  const state = await res.json();
+  lastScore = state.score;
+  lastRound = state.current_round;
+  renderState(state);
+
+  await connectVoice(state.session_id, playerName);
+}
+
+async function resumeGame(savedId, playerName, state) {
+  document.getElementById("resume").hidden = true;
+  document.getElementById("connecting").hidden = false;
+  lastScore = state.score;
+  lastRound = state.current_round;
+  renderState(state); // show the real round/score immediately, not "0"/"—" until the first poll
+  await connectVoice(savedId, playerName);
+}
+
+async function abandonSavedSession(savedId) {
+  // Properly close out the old session server-side (marks it ENDED)
+  // instead of leaving it as an orphaned ACTIVE row forever.
+  try {
+    await fetch(`/api/sessions/${savedId}/end`, { method: "POST" });
+  } catch (e) { /* best-effort cleanup — don't block starting fresh over this */ }
+  clearSavedSession();
+  document.getElementById("resume").hidden = true;
+  document.getElementById("setup").hidden = false;
+  document.getElementById("name").focus();
+}
+
+async function checkForResumableSession() {
+  const savedId = sessionStorage.getItem(SESSION_STORAGE_KEY);
+  if (!savedId) {
+    document.getElementById("setup").hidden = false;
+    document.getElementById("name").focus();
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/sessions/${savedId}`);
+    if (!res.ok) throw new Error("session not found");
+    const state = await res.json();
+    if (state.status !== "ACTIVE") throw new Error("session already ended");
+
+    document.getElementById("resume-summary").textContent =
+      `${state.player_name} — Round ${state.current_round}, Score ${state.score}`;
+    document.getElementById("resume-yes").onclick = () => resumeGame(savedId, state.player_name, state);
+    document.getElementById("resume-no").onclick = () => abandonSavedSession(savedId);
+    document.getElementById("resume").hidden = false;
+  } catch (e) {
+    // Stale/invalid/ended — nothing to resume, fall back to the normal start screen.
+    clearSavedSession();
+    document.getElementById("setup").hidden = false;
+    document.getElementById("name").focus();
+  }
 }
 
 async function refreshState() {
@@ -81,6 +151,7 @@ async function refreshState() {
       stopPolling();
       showGameOver(state);
       refreshLeaderboard();
+      clearSavedSession(); // nothing left to resume once the game is over
     }
   }
 }
@@ -162,6 +233,7 @@ async function endGame() {
   if (pc) pc.close();
   renderState(state);
   showGameOver(state);
+  clearSavedSession();
   await refreshLeaderboard();
 }
 
@@ -174,6 +246,7 @@ function playAgain() {
     pc = null;
   }
   sessionId = null;
+  clearSavedSession(); // defensive — normally already cleared by endGame()/refreshState()
   lastScore = 0;
   lastRound = 1;
 
@@ -259,7 +332,7 @@ nameInput.addEventListener("input", () => {
     document.getElementById("name-error").hidden = true;
   }
 });
-nameInput.focus(); // name is the very first thing you should type
+checkForResumableSession(); // decides whether to show the resume banner or the setup screen
 refreshLeaderboard();
 
 // ---- How to Play: collapsible panel + interactive step tabs ----

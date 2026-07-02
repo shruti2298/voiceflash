@@ -68,7 +68,17 @@
       </div>
     </section>
 
-    <section id="setup" class="panel">
+    <section id="resume" class="panel" hidden>
+      <h2>👋 Welcome back!</h2>
+      <p id="resume-summary" class="resume-summary"></p>
+      <div class="setup-row">
+        <button id="resume-yes" class="btn btn-primary">🔄 Resume game</button>
+        <button id="resume-no" class="btn btn-danger">🏳️ Start fresh instead</button>
+      </div>
+      <p class="hint">You'll be asked for mic access again — refreshing closes the old connection.</p>
+    </section>
+
+    <section id="setup" class="panel" hidden>
       <label for="name">Who's playing? <span class="required-star">*</span></label>
       <div class="setup-row">
         <input id="name" placeholder="Enter your name to begin" autocomplete="off" required maxlength="30" />
