@@ -14,7 +14,6 @@ def test_generate_sequence_has_correct_length_and_valid_words():
     assert all(w in WORDS for w in seq)
 
 
-
 def test_generate_sequence_never_exceeds_word_pool():
     from app.game.words import WORDS
     # even with an absurd max_len, sampling must not raise ValueError
