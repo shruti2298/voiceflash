@@ -15,6 +15,59 @@
       <p class="tagline">Listen up. Repeat it back. Don't blink. 🎧</p>
     </header>
 
+    <section id="howto" class="panel howto">
+      <button id="howto-toggle" class="howto-toggle" aria-expanded="true">
+        <span>❓ How to Play</span>
+        <span class="chevron" id="howto-chevron">▲</span>
+      </button>
+
+      <div id="howto-body" class="howto-body">
+        <div class="howto-steps" id="howto-steps">
+          <button class="step-chip active" data-step="1"><span class="step-num">1</span> Start</button>
+          <button class="step-chip" data-step="2"><span class="step-num">2</span> Listen</button>
+          <button class="step-chip" data-step="3"><span class="step-num">3</span> Repeat</button>
+          <button class="step-chip" data-step="4"><span class="step-num">4</span> Score</button>
+        </div>
+
+        <div class="howto-detail" id="howto-detail">
+          <p data-step-detail="1" class="active">
+            🎙️ Type your name and hit <strong>Start voice game</strong>. Allow microphone
+            access when your browser asks — that's the bot listening, nothing is recorded
+            or saved.
+          </p>
+          <p data-step-detail="2">
+            🤖 The host greets you and speaks a short sequence of words out loud, e.g.
+            <em>"Repeat after me: apple, tiger, river."</em> Just listen — don't respond yet.
+          </p>
+          <p data-step-detail="3">
+            🗣️ Say the words back <strong>in the same order</strong>, then stop talking.
+            The bot patiently waits until you're actually finished before judging you —
+            try talking over it mid-sentence too, it'll stop cleanly and let you go.
+          </p>
+          <p data-step-detail="4">
+            🏆 Nail it → you score points and the <em>next</em> sequence is one word
+            longer. Miss it → game over, final score locked in and added to the
+            leaderboard below.
+          </p>
+        </div>
+
+        <div class="howto-demo">
+          <div class="howto-demo-label">🎬 What a round sounds like</div>
+          <div class="bubble bubble-bot">"Hey Alex! Let's kick off round 1 of Memory Card."</div>
+          <div class="bubble bubble-bot">"Repeat after me: apple, tiger, river."</div>
+          <div class="bubble bubble-you">"Apple, tiger, river."</div>
+          <div class="bubble bubble-bot bubble-good">"Correct! That's 30 points — round 2 coming up!"</div>
+        </div>
+
+        <div class="howto-legend">
+          <div class="legend-item"><span class="legend-icon badge badge-active">● ACTIVE</span> session is live</div>
+          <div class="legend-item"><span class="legend-icon">🃏🃏🃏</span> words in this round</div>
+          <div class="legend-item"><span class="legend-icon">🎤</span> bot is listening</div>
+          <div class="legend-item"><span class="legend-icon">🎉</span> confetti = correct!</div>
+        </div>
+      </div>
+    </section>
+
     <section id="setup" class="panel">
       <label for="name">Who's playing?</label>
       <div class="setup-row">

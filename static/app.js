@@ -188,3 +188,34 @@ function burstConfetti() {
 document.getElementById("start").addEventListener("click", startGame);
 document.getElementById("end").addEventListener("click", endGame);
 refreshLeaderboard();
+
+// ---- How to Play: collapsible panel + interactive step tabs ----
+function setupHowToPlay() {
+  const panel = document.getElementById("howto");
+  const toggleBtn = document.getElementById("howto-toggle");
+
+  toggleBtn.addEventListener("click", () => {
+    const collapsed = panel.classList.toggle("collapsed");
+    toggleBtn.setAttribute("aria-expanded", String(!collapsed));
+    if (!collapsed) localStorage.removeItem("howtoCollapsed");
+    else localStorage.setItem("howtoCollapsed", "1");
+  });
+
+  // Remember dismissal across visits, but always show it the first time.
+  if (localStorage.getItem("howtoCollapsed") === "1") {
+    panel.classList.add("collapsed");
+    toggleBtn.setAttribute("aria-expanded", "false");
+  }
+
+  const chips = document.querySelectorAll(".step-chip");
+  const details = document.querySelectorAll("[data-step-detail]");
+  chips.forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const step = chip.dataset.step;
+      chips.forEach((c) => c.classList.toggle("active", c === chip));
+      details.forEach((d) => d.classList.toggle("active", d.dataset.stepDetail === step));
+    });
+  });
+}
+
+setupHowToPlay();

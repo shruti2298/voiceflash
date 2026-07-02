@@ -381,3 +381,186 @@ input:focus {
   .score-board { grid-template-columns: 1fr; }
   .hero h1 { font-size: 1.6rem; }
 }
+
+/* ---------- How to Play ---------- */
+
+.howto {
+  border: 2px dashed #e2d8ff;
+}
+
+.howto-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--purple-dark);
+  cursor: pointer;
+}
+
+.chevron {
+  transition: transform 0.2s ease;
+  font-size: 0.85rem;
+  color: #a99bdc;
+}
+
+.howto.collapsed .chevron {
+  transform: rotate(180deg);
+}
+
+.howto-body {
+  margin-top: 16px;
+  max-height: 900px;
+  opacity: 1;
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.25s ease, margin-top 0.3s ease;
+}
+
+.howto.collapsed .howto-body {
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
+}
+
+.howto-steps {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.step-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 2px solid #ece5ff;
+  background: #faf8ff;
+  color: #6b6182;
+  border-radius: 999px;
+  padding: 6px 14px 6px 8px;
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.step-chip .step-num {
+  background: #ece5ff;
+  color: var(--purple-dark);
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+}
+
+.step-chip:hover {
+  border-color: #d8caff;
+}
+
+.step-chip.active {
+  background: linear-gradient(90deg, var(--purple), var(--pink));
+  color: white;
+  border-color: transparent;
+}
+
+.step-chip.active .step-num {
+  background: rgba(255, 255, 255, 0.3);
+  color: white;
+}
+
+.howto-detail {
+  background: #faf8ff;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  min-height: 60px;
+}
+
+.howto-detail p {
+  display: none;
+  margin: 0;
+  line-height: 1.5;
+  font-size: 0.92rem;
+  color: #4a4160;
+  animation: pop-in 0.25s ease;
+}
+
+.howto-detail p.active {
+  display: block;
+}
+
+.howto-demo {
+  margin-bottom: 16px;
+}
+
+.howto-demo-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #948bab;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.bubble {
+  display: block;
+  width: fit-content;
+  max-width: 85%;
+  padding: 8px 14px;
+  border-radius: 14px;
+  font-size: 0.88rem;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.bubble-bot {
+  background: #f1eeff;
+  color: var(--purple-dark);
+  border-bottom-left-radius: 4px;
+}
+
+.bubble-bot.bubble-good {
+  background: #e6faf0;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.bubble-you {
+  background: linear-gradient(90deg, var(--purple), var(--pink));
+  color: white;
+  margin-left: auto;
+  border-bottom-right-radius: 4px;
+}
+
+.howto-legend {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: #6b6182;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-icon {
+  font-size: 0.95rem;
+}
+
+.legend-icon.badge {
+  font-size: 0.7rem;
+}
+
+@media (max-width: 480px) {
+  .howto-legend { grid-template-columns: 1fr; }
+}
