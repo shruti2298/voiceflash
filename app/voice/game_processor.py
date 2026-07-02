@@ -1,5 +1,6 @@
 import asyncio
 
+from loguru import logger
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame, BotStoppedSpeakingFrame, Frame, LLMMessagesFrame,
     TTSSpeakFrame, TranscriptionFrame, VADUserStartedSpeakingFrame,
@@ -19,6 +20,11 @@ HOST_SYSTEM = {
         "energetic sentence. Never list, invent, or change any words yourself."
     ),
 }
+
+# If VAD never signals the user stopped talking (e.g. noisy audio prevents
+# clean silence detection), force the turn to resolve instead of waiting
+# forever — see MemoryGameProcessor._turn_timeout_watchdog.
+_TURN_TIMEOUT_SECS = 8.0
 
 
 class MemoryGameProcessor(FrameProcessor):
@@ -55,6 +61,7 @@ class MemoryGameProcessor(FrameProcessor):
         self._turn_active = False
         self._user_stopped = False
         self._bot_speaking = False
+        self._turn_timeout_task: asyncio.Task | None = None
 
     # ---- speech helpers -------------------------------------------------
     async def _speak(self, text: str):
@@ -76,7 +83,18 @@ class MemoryGameProcessor(FrameProcessor):
             if self._session_id:
                 # Resume the session the REST API already created, rather than
                 # starting a brand-new one the frontend never learns about.
-                state = svc.get_state(self._session_id)
+                try:
+                    state = svc.get_state(self._session_id)
+                except KeyError:
+                    # The session_id the client sent doesn't exist (stale,
+                    # tampered with, or a race we don't otherwise expect).
+                    # Don't let that kill the call — fall back to a fresh
+                    # session so the player still gets a working game.
+                    logger.warning(
+                        f"Unknown session_id {self._session_id!r} from voice client; "
+                        f"starting a new session for {self._player_name!r} instead"
+                    )
+                    state = svc.start_session(self._player_name)
             else:
                 state = svc.start_session(self._player_name)
             seq = svc.get_current_sequence(state.session_id)
@@ -126,7 +144,18 @@ class MemoryGameProcessor(FrameProcessor):
         await self._speak(self._say_sequence(seq))
 
     # ---- turn detection -------------------------------------------------
+    def _cancel_turn_timeout(self):
+        task = self._turn_timeout_task
+        # Guard against the watchdog cancelling itself: when the timeout
+        # fires and calls _finish_turn() -> _reset_turn(), this runs from
+        # inside the watchdog's own task. Cancelling "yourself" mid-await
+        # would raise CancelledError out of the very turn it just resolved.
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        self._turn_timeout_task = None
+
     def _reset_turn(self):
+        self._cancel_turn_timeout()
         self._buffer.clear()
         self._turn_active = False
         self._user_stopped = False
@@ -139,6 +168,20 @@ class MemoryGameProcessor(FrameProcessor):
         self._reset_turn()
         if self._session_id and transcript:
             await self._handle_user_turn(transcript)
+
+    async def _turn_timeout_watchdog(self):
+        """Force-resolves a turn if VAD never signals the user stopped talking.
+
+        Without this, noisy audio that prevents clean silence detection would
+        leave the round waiting forever — the player's answer would sit in
+        the buffer, never evaluated, with no feedback from the bot at all.
+        """
+        try:
+            await asyncio.sleep(_TURN_TIMEOUT_SECS)
+        except asyncio.CancelledError:
+            return
+        if self._turn_active:
+            await self._finish_turn()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -162,6 +205,8 @@ class MemoryGameProcessor(FrameProcessor):
             self._buffer.clear()
             self._turn_active = True
             self._user_stopped = False
+            self._cancel_turn_timeout()
+            self._turn_timeout_task = asyncio.create_task(self._turn_timeout_watchdog())
 
         elif isinstance(frame, TranscriptionFrame) and self._turn_active:
             self._buffer.append(frame.text)
