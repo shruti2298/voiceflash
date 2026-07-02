@@ -1,8 +1,9 @@
 import asyncio
 
 from pipecat.frames.frames import (
-    Frame, LLMMessagesFrame, TTSSpeakFrame, TranscriptionFrame,
-    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame, StartInterruptionFrame,
+    BotStartedSpeakingFrame, BotStoppedSpeakingFrame, Frame, LLMMessagesFrame,
+    TTSSpeakFrame, TranscriptionFrame, VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame, StartInterruptionFrame,
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
@@ -33,6 +34,13 @@ class MemoryGameProcessor(FrameProcessor):
     (not the plain UserStartedSpeakingFrame/UserStoppedSpeakingFrame — those are only
     pushed by the deprecated turn-analyzer/aggregator code path in this Pipecat
     version, which this pipeline doesn't use).
+
+    Barge-in: for the same reason, this pipeline's transport never emits
+    StartInterruptionFrame on its own — that only happens via the deprecated
+    turn-analyzer path or an LLMUserAggregator, neither of which we use. So
+    this processor detects the barge-in itself (VAD fires while the bot is
+    speaking) and calls broadcast_interruption(), which is what actually stops
+    the in-flight TTS/audio output.
     """
 
     def __init__(self, player_name: str, session_id: str | None = None):
@@ -46,6 +54,7 @@ class MemoryGameProcessor(FrameProcessor):
         self._buffer: list[str] = []
         self._turn_active = False
         self._user_stopped = False
+        self._bot_speaking = False
 
     # ---- speech helpers -------------------------------------------------
     async def _speak(self, text: str):
@@ -138,7 +147,18 @@ class MemoryGameProcessor(FrameProcessor):
             # barge-in: drop the in-progress utterance and current turn state
             self._reset_turn()
 
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+
         elif isinstance(frame, VADUserStartedSpeakingFrame):
+            if self._bot_speaking:
+                # True barge-in: the transport doesn't emit StartInterruptionFrame
+                # on its own in this pipeline (see class docstring), so we trigger
+                # it ourselves — this is what actually stops the bot's audio.
+                await self.broadcast_interruption()
             self._buffer.clear()
             self._turn_active = True
             self._user_stopped = False
