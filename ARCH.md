@@ -251,3 +251,189 @@ simply key-value and doesn't need locking for this access pattern).
 - **No rate limiting / abuse protection** on session creation — acceptable
   for the assignment's scope, would be a first addition before any public
   deployment.
+
+---
+
+## 8. Mapping this project to a Senior/AI Software Engineer interview (Curelink JD)
+
+This section is deliberately honest about scale: this is a single-machine
+assignment project, not a system running at Curelink's 350K MAU / 150K
+minutes-of-voice-per-day scale. The value here is that most of the *individual
+engineering decisions* below are the same shape as what shows up at any
+scale — just with smaller numbers. Use the "evidence" as concrete, specific
+things you actually built and can walk through line-by-line; use the "at
+scale" notes as the honest extrapolation an interviewer will push you toward.
+
+### 8.1 "LLM orchestration at scale (latency, cost, memory)"
+
+**Evidence in this codebase:**
+- The LLM is deliberately kept **off the critical correctness path** —
+  `engine.evaluate()` (pure Python) judges the answer; Groq only ever
+  generates host banter (`app/voice/game_processor.py`, `_banter()`). This is
+  a latency *and* cost decision: every round makes exactly one small LLM call
+  for flavor text, never a call whose failure or slowness could block or
+  corrupt game state.
+- The system prompt (`HOST_SYSTEM`) is deliberately one line, asking for "ONE
+  short, energetic sentence" — a direct token-budget/latency control, not an
+  afterthought.
+- The exact word sequence bypasses the LLM stage entirely via a separate
+  `TTSSpeakFrame` channel (`_speak()` vs `_banter()`) — this is the "memory"
+  half of LLM orchestration: deciding what the model is and isn't allowed to
+  be the source of truth for.
+
+**At scale, be ready to talk about:** prompt/response caching for repeated
+banter patterns, streaming partial LLM tokens into TTS to cut perceived
+latency (this project doesn't stream — it waits for the full LLM response
+before TTS starts), fallback behavior when the LLM provider is degraded
+(this project has none — an LLM outage would surface as a pipeline error
+frame, not a graceful "skip banter, just play the sequence" fallback), and
+cost controls like model tiering (cheap model for banter, escalate only if
+needed) — none of which is built here but all of which follow directly from
+the separation already in place.
+
+### 8.2 "Voice AI infra (real-time calls, async workflows)"
+
+**Evidence in this codebase — this is the strongest match:**
+- A full real-time WebRTC voice pipeline: `app/voice/bot.py` (pipeline
+  assembly), `app/voice/webrtc.py` (SDP offer/answer signaling),
+  `app/voice/game_processor.py` (custom turn-taking and barge-in logic).
+- **A genuine, non-trivial debugging story**: the bot initially never
+  reacted to answers at all. Root-caused by adding targeted diagnostic
+  logging (frame-type tallies) rather than guessing, which showed audio
+  frames flowing and Deepgram transcribing correctly, but the turn never
+  activating. Traced into Pipecat's transport source to find that
+  `VADUserStartedSpeakingFrame`/`VADUserStoppedSpeakingFrame` (not the
+  plain-named frames) are what this pipeline configuration actually emits —
+  a version-specific, undocumented-in-practice framework detail found by
+  reading source, not docs.
+- **A second real debugging story, same category**: barge-in silently didn't
+  work — the bot talked over the user with no error. Traced through the
+  transport's VAD-handling code paths to find that `StartInterruptionFrame`
+  is *only* ever emitted via a deprecated turn-analyzer path or an
+  `LLMUserAggregator`, neither of which this minimal pipeline uses. Fixed by
+  having the custom processor track bot-speaking state itself and call the
+  framework's own `broadcast_interruption()` — using a *stable* public API
+  correctly, instead of assuming a framework default that silently didn't
+  apply to this configuration.
+- Async workflow handling: blocking DB calls inside the voice pipeline are
+  explicitly run via `asyncio.to_thread(...)` (`_start_session_sync`,
+  `_submit_sync`) so they never stall the audio event loop — a direct,
+  concrete example of sync/async boundary management in a latency-sensitive
+  path.
+
+**At scale, be ready to talk about:** call routing/load-balancing for voice
+specifically (§4 above — WebRTC calls are pinned to a process by nature),
+horizontal scaling of STT/TTS vendor concurrency limits, and turn-detection
+tuning for real-world noisy audio (this project uses default Silero VAD
+thresholds).
+
+### 8.3 "High-throughput backend systems (queues, pods, autoscaling)"
+
+**Evidence in this codebase:** the REST layer is deliberately stateless (§4)
+— every request re-derives state from Redis/Postgres, which is *the*
+precondition for running many pods behind a load balancer with no sticky
+routing. The Redis migration (§4, §6.2) was made *specifically* because the
+original in-process cache would silently break correctness the moment you
+ran more than one worker — i.e., this project has a real, committed example
+of "single-instance code that looks fine until you scale it," found and
+fixed before it shipped.
+
+**Honest gap:** there is no message queue anywhere in this codebase, and no
+ECS/Kubernetes deployment — it runs as a single Uvicorn process against
+docker-compose Postgres/Redis. Don't imply otherwise. Do be ready to describe
+*where* a queue would go if this needed to scale: e.g., moving the Groq
+banter call off the request-latency path entirely (publish a "round resolved"
+event, consume it asynchronously, push the result over the WebRTC data
+channel or a websocket when ready) rather than awaiting it inline as
+`_banter()` does today. That's a concrete, defensible extension of this
+exact codebase, not a generic answer.
+
+### 8.4 "Cost-efficient cloud infra (AWS/GCP)"
+
+**Evidence in this codebase:** fully 12-factor-style config — every
+credential and endpoint (`DATABASE_URL`, `REDIS_URL`, API keys) comes from
+environment variables via `pydantic-settings` (`app/config.py`), nothing
+hardcoded, `.env` is git-ignored. Postgres and Redis both run as ordinary
+containers (`docker-compose.yml`) with no code assuming a specific
+deployment target — the same image would run unmodified on ECS Fargate, GKE,
+or a bare VM.
+
+**Honest gap:** no actual cloud deployment exists for this project. Be ready
+to talk about the *shape* of a cost-efficient deployment of this exact
+system: stateless API pods on spot/preemptible instances (safe because they
+hold no session state — Redis does), a managed Postgres (RDS/Cloud SQL)
+sized for the actual write pattern (session/round/response inserts are small
+and infrequent per user), and a managed Redis (ElastiCache/Memorystore) sized
+by session TTL × concurrent players rather than guessed.
+
+### 8.5 "API/data model design for messy real-world domains, adapting to changing requirements"
+
+**Evidence in this codebase:** the `SessionState` schema was extended twice
+during development (word-visibility fields, then nothing removed) —
+`last_expected`/`last_heard`/`last_correct` were added as **purely additive,
+optional fields** (`app/schemas.py`), so no existing consumer (the REST API
+tests, the frontend) had to change to keep working. The `AnswerResult` vs
+`SessionState` split itself is a real modeling decision: `SessionState` never
+leaks the *current* unanswered sequence (only its length), while
+`AnswerResult`/the new `last_*` fields deliberately reveal words only *after*
+they're already answered — the schema encodes a game rule, not just data
+shape.
+
+### 8.6 "Operating and debugging infra — DBs, caches, load balancers, deployments"
+
+**Evidence in this codebase — two real, resolved incidents, both found by
+inspecting actual running processes rather than assuming the code was
+wrong:**
+- Postgres connections failed with `role "voiceflash" does not exist` —
+  root-caused to a **native Postgres process already bound to port 5432** on
+  the dev machine, silently shadowing the intended Docker container. Found
+  via `lsof -nP -iTCP:5432 -sTCP:LISTEN`, not by reading application code.
+  Same pattern recurred with Redis on 6379. Both resolved by remapping the
+  container ports (5433, 6380) rather than fighting the OS.
+- An API credential ("Deepgram key") failed with 401s that *looked* like a
+  config-loading bug; verified directly against the vendor's REST API
+  (`GET /v1/projects`) to prove the key itself was server-side deactivated,
+  not a bug in this code — the discipline of checking the boundary
+  (is it us or is it them?) with a live, minimal repro instead of guessing.
+
+### 8.7 "Strong database fundamentals, query optimization, EXPLAIN plans"
+
+**Honest gap:** this project's data volume never approached a scale where
+query optimization mattered — no query in this codebase has been profiled
+with `EXPLAIN ANALYZE`, and no index was added beyond what a primary key /
+foreign key implies. Don't overclaim this from the project itself. What *is*
+real and defensible: the schema design that makes the common queries cheap
+by construction — `Round` is filtered by `(session_id, round_number)`
+(`GameService._current_round`) and `Response` is uniquely keyed by
+`round_id` — both are exactly the access patterns a composite index would
+target at scale, even though none was added here because it wasn't needed
+yet. Bring a *different*, real story for the EXPLAIN-plan/outage question if
+you have one; don't stretch this project to cover it.
+
+### 8.8 "System design fundamentals: sync vs async, concurrency, ordering, failure modes"
+
+**Evidence in this codebase — this is the second-strongest match, alongside
+§8.2:**
+- **A real concurrency bug, found and fixed, not hypothetical**: a
+  check-then-act race in `GameService.submit_answer` where two near-
+  simultaneous submissions for the same round could both pass an
+  idempotency check before either committed. Fixed with a DB unique
+  constraint as the actual correctness guarantee, plus application-level
+  `IntegrityError` handling so the losing request degrades gracefully
+  instead of surfacing a 500 (§6.1). This is a textbook "failure mode in a
+  distributed system" — multiple writers, no distributed lock, correctness
+  enforced by the storage layer instead.
+- **Ordering**: the turn-taking logic (§3.2) is fundamentally an ordering
+  problem — two async signals (VAD stop, STT final transcript) can arrive in
+  either order, and the system is explicitly written to be correct
+  regardless of which arrives last, rather than assuming a fixed order.
+- **Sync vs async trade-offs, made explicit and justified**: blocking
+  SQLAlchemy calls are pushed to a thread pool (`asyncio.to_thread`) from the
+  latency-sensitive voice path so they never stall the audio pipeline,
+  while the REST layer uses FastAPI's ordinary sync-in-threadpool handling —
+  two different concurrency models chosen deliberately for two different
+  latency profiles in the same codebase.
+- **Idempotency as a first-class design goal**, not a patch: ending an
+  already-ended session, resubmitting an already-answered round, and the
+  voice pipeline resuming a REST-created session instead of forking a new
+  one are all explicit idempotent/resumable code paths, not accidents.
