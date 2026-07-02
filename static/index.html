@@ -2,26 +2,74 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Memory Card Voice Bot</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <div class="confetti" id="confetti"></div>
+
   <main>
-    <h1>🧠 Memory Card Voice Bot</h1>
-    <div id="setup">
-      <input id="name" placeholder="Your name" value="Player" />
-      <button id="start">Start voice game</button>
-    </div>
-    <section id="game" hidden>
-      <div class="stat">Status: <span id="status">—</span></div>
-      <div class="stat">Round: <span id="round">—</span></div>
-      <div class="stat">Score: <span id="score">0</span></div>
-      <div class="stat">Sequence length: <span id="len">—</span></div>
-      <button id="end">End game</button>
+    <header class="hero">
+      <h1><span class="wobble">🧠</span> Memory Card <span class="highlight">Voice</span> Bot</h1>
+      <p class="tagline">Listen up. Repeat it back. Don't blink. 🎧</p>
+    </header>
+
+    <section id="setup" class="panel">
+      <label for="name">Who's playing?</label>
+      <div class="setup-row">
+        <input id="name" placeholder="Your name" value="Player" autocomplete="off" />
+        <button id="start" class="btn btn-primary">
+          <span class="btn-emoji">🎙️</span> Start voice game
+        </button>
+      </div>
+      <p class="hint">You'll be asked for mic access — that's the bot listening for your answers.</p>
     </section>
-    <h2>🏆 Leaderboard</h2>
-    <ol id="leaderboard"></ol>
+
+    <section id="connecting" class="panel" hidden>
+      <div class="spinner"></div>
+      <p>Connecting to your game host…</p>
+    </section>
+
+    <section id="game" class="panel" hidden>
+      <div class="status-row">
+        <span id="status-badge" class="badge badge-active">● ACTIVE</span>
+        <span class="badge badge-round">Round <span id="round">—</span></span>
+      </div>
+
+      <div class="score-board">
+        <div class="score-tile">
+          <div class="score-label">Score</div>
+          <div class="score-value" id="score">0</div>
+        </div>
+        <div class="score-tile">
+          <div class="score-label">Cards this round</div>
+          <div class="cards" id="cards"></div>
+        </div>
+      </div>
+
+      <div id="feedback" class="feedback"></div>
+
+      <div class="mic-row" id="mic-row">
+        <div class="mic-indicator" id="mic-indicator">🎤</div>
+        <span id="mic-label">Listening…</span>
+      </div>
+
+      <button id="end" class="btn btn-danger">🏳️ End game</button>
+
+      <div id="game-over" class="game-over" hidden>
+        <h2>🎬 Game Over!</h2>
+        <p>Final score: <strong id="final-score">0</strong></p>
+        <p class="game-over-sub">Nice run — try to beat it!</p>
+      </div>
+    </section>
+
+    <section class="panel leaderboard-panel">
+      <h2>🏆 Leaderboard</h2>
+      <ol id="leaderboard" class="leaderboard"></ol>
+    </section>
   </main>
+
   <script src="/app.js"></script>
 </body>
 </html>
