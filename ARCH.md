@@ -909,3 +909,27 @@ read-heavy/write-light cache candidate) as the two with the clearest
 performance payoff. "Recently used sequences" wouldn't have needed caching
 here since `engine.generate_sequence()` is a pure, in-memory
 `random.sample()` call — cheaper than a cache round-trip would be.
+
+---
+
+## 13. Technical Requirements checklist — what we did for each
+
+The brief's "Technical Requirements" section, in its exact order, mapped to
+concrete code. Several of these are covered in more depth elsewhere in this
+doc — this section is the quick-reference version; follow the cross-refs
+for the full story.
+
+| # | Requirement | What we did | Deeper coverage |
+|---|---|---|---|
+| 1 | Use Pipecat as the core framework | Real `pipecat-ai==0.0.108` pipeline in `app/voice/bot.py`: `Pipeline([transport.input(), stt, game, llm, tts, transport.output()])`. Not a wrapper around a different voice stack — Pipecat's actual `FrameProcessor`/frame model is what the whole system is built on. | §2, §3.2 |
+| 2 | Proper turn-taking | `MemoryGameProcessor.process_frame()` doesn't evaluate on either "VAD says user stopped" or "final transcript arrived" alone — it waits for **both**, whichever comes last. Necessary because Deepgram's final transcript and VAD's stop signal race each other and can arrive in either order. | §3.2, §9.2 |
+| 3 | Handle interruptions cleanly, demonstrate in video | `broadcast_interruption()` called manually from `MemoryGameProcessor` when VAD detects speech while `self._bot_speaking` is true — this pipeline's transport doesn't emit `StartInterruptionFrame` automatically without a `turn_analyzer`/`LLMUserAggregator`, which was found by tracing the framework source, not assumed. `docs/video-walkthrough-script.md` has the exact on-camera narration for demonstrating this. | §3.2, §9.6, §10 |
+| 4 | Engaging, human-like game-host behavior | `HOST_SYSTEM` persona prompt (`app/voice/game_processor.py`) + `_banter()` calls at every juncture — greeting, correct-answer reaction, game-over — via Groq, deliberately kept to "ONE short, energetic sentence" for low latency. Never used to decide correctness (§8.1). | §3.2, §8.1 |
+| 5 | Persist session/round/response/score in a database | 3-table Postgres schema (`app/db/models.py`): `game_sessions` → `rounds` → `responses`, with cascade deletes and the `UniqueConstraint` that backs requirement #8. | §12.1, §12.2 |
+| 6 | Expose backend APIs for session/score data | 5 REST endpoints (`app/api/routes.py`), all thin wrappers around the same `GameService` the voice pipeline calls — no separate "API version" of the game logic. | §3.1, §12.2 |
+| 7 | Caching for ≥1 meaningful backend flow | Redis-backed active-session state (30 min TTL) and leaderboard (60s TTL) — two keys, cache-aside pattern, resilient to Redis outages (§5). | §4, §12.3 |
+| 8 | Avoid double-scoring the same response | Two layers, not one: an application-level idempotency check (`rnd.status != "PENDING"`) for the common sequential-retry case, **and** a DB-level `UniqueConstraint("round_id")` plus `IntegrityError` recovery for the actual concurrent-race case a check-then-act condition can't prevent on its own. This is a real bug that was found and fixed, not a feature written correctly the first time. | §6.1, §10 |
+| 9 | Word/card list hardcoded or seeded | 26-word curated pool (`app/game/words.py`), seeded rather than generated — chosen to be phonetically distinct for STT accuracy. Its one implicit invariant (never overlapping `engine.FILLER`) is enforced by a dedicated test, not just a comment. | §10 |
+
+**The one-sentence framing for the video, if asked "which of these was hardest":**
+*"Turn-taking and interruptions, #2 and #3 — because they're the two places where Pipecat's default behavior quietly didn't apply to a pipeline this minimal, and the only way to find that was reading the framework's own source, not its docs."*
