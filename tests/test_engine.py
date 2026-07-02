@@ -45,3 +45,13 @@ def test_evaluate_wrong_order_is_incorrect():
 def test_evaluate_wrong_word_is_incorrect():
     r = engine.evaluate(["apple", "tiger"], "apple river")
     assert r.is_correct is False
+
+
+def test_word_pool_never_overlaps_filler_words():
+    """If a word pool entry were ever also a FILLER word, normalize() would
+    silently strip it out of every transcript, making that word permanently
+    uncheckable. This is an implicit invariant between words.py and
+    engine.FILLER — enforce it here instead of leaving it undocumented."""
+    from app.game.words import WORDS
+    overlap = set(WORDS) & engine.FILLER
+    assert not overlap, f"word pool contains filler words: {overlap}"
