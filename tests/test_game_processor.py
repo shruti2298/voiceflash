@@ -121,6 +121,43 @@ def test_turn_watchdog_does_not_fire_if_turn_finishes_normally(sqlite_session_lo
     assert task.cancelled()
 
 
+def test_turn_watchdog_ends_session_when_nothing_was_said(sqlite_session_local, monkeypatch):
+    # If the timeout fires with a genuinely empty buffer (the player never
+    # said anything at all this turn), the round must still resolve as a
+    # wrong answer and end the session — not silently reset and hang
+    # forever waiting for an answer that already timed out.
+    monkeypatch.setattr(gp_module, "_TURN_TIMEOUT_BASE_SECS", 0.05)
+    monkeypatch.setattr(gp_module, "_TURN_TIMEOUT_PER_WORD_SECS", 0.0)
+
+    processor = MemoryGameProcessor(player_name="Silent")
+    spoken = []
+
+    async def fake_speak(text):
+        spoken.append(("speak", text))
+
+    async def fake_banter(instruction):
+        spoken.append(("banter", instruction))
+
+    processor._speak = fake_speak
+    processor._banter = fake_banter
+
+    async def scenario():
+        await processor._start_game()
+        spoken.clear()
+
+        # VAD detected speech starting, but nothing was ever transcribed
+        # before the timeout fires — buffer stays empty the whole turn.
+        processor._turn_active = True
+        task = asyncio.create_task(processor._turn_timeout_watchdog())
+        processor._turn_timeout_task = task
+        await task
+
+    asyncio.run(scenario())
+
+    assert processor._session_id is None  # session was ended, not left dangling
+    assert spoken  # the bot said something instead of going silent forever
+
+
 def test_process_frame_resets_turn_on_any_interruption_frame():
     # broadcast_interruption() (used by our own barge-in path) creates a plain
     # InterruptionFrame, not a StartInterruptionFrame — so process_frame must

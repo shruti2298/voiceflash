@@ -172,12 +172,19 @@ class MemoryGameProcessor(FrameProcessor):
         self._user_stopped = False
 
     async def _finish_turn(self):
-        """Fires once per turn, when we have BOTH a stop signal and a transcript."""
+        """Fires once per turn: normally once we have both a stop signal and a
+        transcript, or forced by the timeout watchdog with no transcript at all
+        if the player never said anything. Either way the round must resolve —
+        an empty transcript still goes through _handle_user_turn so it's
+        evaluated (and correctly scored wrong) and the session moves on or
+        ends, instead of silently resetting and leaving the game hanging
+        forever waiting for an answer that already timed out.
+        """
         if not self._turn_active:
             return
         transcript = " ".join(self._buffer).strip()
         self._reset_turn()
-        if self._session_id and transcript:
+        if self._session_id:
             await self._handle_user_turn(transcript)
 
     async def _turn_timeout_watchdog(self):
