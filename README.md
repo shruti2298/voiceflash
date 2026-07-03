@@ -381,12 +381,17 @@ pipeline this minimal — see below for exactly why.
   feedback. The timeout scales with the round's sequence length (6s base + 2.5s per word), so
   round 1's 3-word sequence gets ~13.5s while round 4's 6-word sequence gets ~21s — a flat
   timeout was cutting players off mid-answer on longer, harder sequences.
-- **Staying silent now properly ends the game instead of leaving it stuck.** The watchdog above
-  used to skip scoring entirely when nothing was said (an empty transcript failed a truthiness
-  check), so a player who never answered at all left the session dangling forever with no
-  game-over, no feedback, nothing. An empty transcript is now evaluated the same as any other
-  answer — `engine.evaluate()` correctly scores it wrong, ending the session and speaking the
-  correct sequence, exactly like a real incorrect answer would.
+- **Staying completely silent now properly ends the game instead of getting stuck on
+  "Listening...".** Two separate bugs, found in sequence, both had to be fixed for this: (1) the
+  watchdog only ever got *created* inside the VAD-detected-speech branch — a player who made
+  literally no sound at all after the bot spoke never triggered VAD, so no watchdog ever started
+  and there was no timeout running at all; fixed by starting the listening window (and its
+  timeout) the moment the bot's own speech finishes (`BotStoppedSpeakingFrame`), not only once
+  VAD detects the player talking. (2) Even when the watchdog did fire, it used to skip scoring
+  entirely on an empty transcript (a truthiness check), leaving the round resolved-but-silent
+  with no game-over. Both fixed now — an empty transcript is evaluated like any other answer
+  (`engine.evaluate()` correctly scores it wrong), ending the session and speaking the correct
+  sequence, same as a real incorrect answer.
 - **Interruptions:** this Pipecat version never emits `StartInterruptionFrame` on its own
   without a `turn_analyzer`/`LLMUserAggregator` (which this minimal pipeline intentionally
   doesn't use). `MemoryGameProcessor` tracks whether the bot is currently speaking and, when
