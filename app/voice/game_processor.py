@@ -215,10 +215,14 @@ class MemoryGameProcessor(FrameProcessor):
                 # True barge-in: the transport doesn't emit StartInterruptionFrame
                 # on its own in this pipeline (see class docstring), so we trigger
                 # it ourselves — this is what actually stops the bot's audio.
-                logger.info(
-                    f"Barge-in detected for session {self._session_id!r} — "
+                # Colored red purely so this line is easy to spot/highlight in a
+                # terminal recording — it's still a normal INFO-level event, not
+                # an error; logger.opt(colors=True) is loguru's own markup for
+                # forcing a color without changing the log level's semantics.
+                logger.opt(colors=True).info(
+                    f"<red><bold>Barge-in detected</bold> for session {self._session_id!r} — "
                     "user started speaking while the bot was mid-speech; "
-                    "broadcasting interruption to stop TTS/audio output"
+                    "broadcasting interruption to stop TTS/audio output</red>"
                 )
                 await self.broadcast_interruption()
             self._buffer.clear()
