@@ -9,6 +9,10 @@ instructions and gameplay, see [README.md](README.md).
 
 ## 1. Goal and constraints
 
+**Simple version:** it's a "Simon Says" memory game played by voice. The bot
+says a list of words, you repeat them back, and code (never an AI model)
+decides if you got it right.
+
 A voice-based memory game: the bot speaks a growing word sequence over a live
 WebRTC call, the player repeats it back, and the backend deterministically
 judges the answer, scores it, persists it, and advances the game. The two
@@ -22,6 +26,11 @@ constraints that shaped every decision below:
 ---
 
 ## 2. Tech stack and why
+
+**Simple version:** one Python web server does everything — talks to the
+voice AI providers, stores game data in a real database, keeps a fast cache
+in Redis, and serves a plain HTML page. Nothing exotic; every choice below
+is the boring, standard option for what it's doing.
 
 | Piece | Choice | Why |
 |---|---|---|
@@ -38,6 +47,12 @@ constraints that shaped every decision below:
 ---
 
 ## 3. Component architecture
+
+**Simple version:** the browser talks to the server two different ways at
+once — a normal REST API for starting/checking/ending the game, and a
+separate live voice connection (WebRTC) for the actual talking. Both paths
+end up calling the exact same game logic underneath, so there's only ever
+one "brain" deciding what's correct.
 
 ```
                  ┌──────────────────────── Browser (static/) ────────────────────────┐
@@ -66,6 +81,11 @@ constraints that shaped every decision below:
 
 ### 3.1 The single source of truth: `engine.py` → `service.py`
 
+**Simple version:** all the actual game rules live in one file
+(`engine.py`), and one wrapper (`service.py`) is the only thing allowed to
+save that to a database. Both the website and the voice bot call the same
+wrapper — so there's no way for the two to disagree about what happened.
+
 The game's "brain" lives in exactly one place:
 
 - **`app/game/engine.py`** — pure functions, no I/O: sequence generation,
@@ -83,6 +103,14 @@ and "the voice version." This is what makes it possible to reason about
 correctness once and get it for both interfaces.
 
 ### 3.2 Voice pipeline internals
+
+**Simple version:** audio flows through a straight line of stages — speech
+becomes text, my code decides what to do, an AI model adds personality,
+text becomes speech again. The two trickiest real-time problems (knowing
+when someone's *done* talking, and reacting instantly if they talk over the
+bot) aren't handled automatically by the framework here — they're solved by
+hand in this file, and that's the most interesting part of this project to
+talk about.
 
 `app/voice/bot.py` assembles a linear Pipecat pipeline:
 
@@ -122,6 +150,12 @@ consequences of that choice, both handled explicitly:
 
 ## 4. Scalability
 
+**Simple version:** the website/API part could run on 10 servers at once
+tomorrow with zero code changes, because none of them remember anything
+themselves — Postgres and Redis do. The one thing that *can't* just be
+copied across servers is a live phone call, and that's true of any
+real-time voice system, not a flaw here.
+
 The design goal was: **the REST API and leaderboard scale horizontally with
 zero special handling; voice calls scale by routing, not by shared state.**
 
@@ -155,6 +189,12 @@ zero special handling; voice calls scale by routing, not by shared state.**
 ---
 
 ## 5. Fault tolerance and resilience
+
+**Simple version:** if any single piece of this system breaks — the AI
+voice provider, the LLM, even the cache — the game either keeps working
+correctly or fails safely, never silently wrong. Several of the bullets
+below are real bugs that were found and fixed during development, not
+theoretical "what if" scenarios.
 
 - **Validation is never a network call.** `engine.evaluate()` is pure,
   in-process Python — no dependency on Deepgram or Groq being up decides
@@ -215,10 +255,19 @@ zero special handling; voice calls scale by routing, not by shared state.**
 
 ## 6. Concurrency
 
+**Simple version:** "concurrency" here just means "what if two things
+happen at almost exactly the same time." Two real cases of that were found
+and fixed in this project — not made up for this document.
+
 Two distinct concurrency problems were identified and fixed during
 development (both are real commits in this repo's history, not hypothetical):
 
 ### 6.1 Same-round double-submission race
+
+**Simple version:** if the same answer got submitted twice in the same
+split second, the game could have scored it twice. Now it can't — the
+database itself refuses to let that happen, and the code handles that
+refusal gracefully instead of crashing.
 
 `GameService.submit_answer` originally read the `Round`, checked whether it
 was already answered, and only *then* wrote — a classic check-then-act race.
@@ -240,6 +289,10 @@ escapes.
 
 ### 6.2 Cross-process cache consistency
 
+**Simple version:** if you ran two copies of this server, they'd need to
+agree on each player's score at all times. That only works because the
+cache is Redis (shared), not each server's own memory (which wouldn't agree).
+
 Covered in §4 — the move from an in-process cache to Redis is as much a
 concurrency fix as a scalability one: without it, two processes serving the
 same session concurrently (e.g., one REST request and one voice-pipeline
@@ -247,6 +300,10 @@ write landing on different workers) could each cache a different, stale view
 of that session's score/round.
 
 ### 6.3 One voice call per session, enforced by construction
+
+**Simple version:** the website and the voice bot both operate on the same
+game session — the voice bot never quietly creates a second, disconnected
+one behind the scenes (this was an actual bug, found and fixed).
 
 The voice pipeline resumes the exact session the REST API created
 (`session_id` is threaded through `POST /rtc/offer` → `run_bot()` →
@@ -259,6 +316,10 @@ multi-writer problem.
 
 ### 6.4 Per-connection isolation
 
+**Simple version:** two players' games never touch each other's data in
+memory — the only place they could possibly collide is the shared database,
+which is exactly where §6.1's fix lives.
+
 Each `SmallWebRTCConnection`/pipeline instance is independent — one player's
 voice call, `MemoryGameProcessor`, and DB session have no shared mutable
 state with another player's. Concurrent players don't contend for any
@@ -269,6 +330,10 @@ simply key-value and doesn't need locking for this access pattern).
 ---
 
 ## 7. Known limitations / explicit non-goals
+
+**Simple version:** here's what this project honestly doesn't do, said
+plainly instead of buried. Naming your own gaps unprompted is a stronger
+interview signal than waiting to be caught out.
 
 - **Voice calls don't survive a process restart or fail over to another
   instance.** This is inherent to peer-to-peer WebRTC, not a fixable
@@ -476,6 +541,11 @@ you have one; don't stretch this project to cover it.
 ---
 
 ## 9. End-to-end flow reference — where to look, in order
+
+**Simple version:** this is a map for "walk me through what happens when a
+user does X" questions. Each numbered flow below is a literal ordered list
+of which file and which function runs next — read top to bottom and you're
+reading the actual code path.
 
 Use this as a navigation map when asked "walk me through what happens
 when...". Each row is the exact call order, file by file.
@@ -737,6 +807,12 @@ about which one tests what — see §11 for the full walkthrough:
 
 ## 11. Testing multi-user scenarios in practice
 
+**Simple version:** "does it work with multiple people" is really two
+separate questions — does the database/cache stay correct under load
+(testable with a script, no microphone needed), and does the actual voice
+audio hold up with two real people talking at once (needs real hardware,
+and has a physical gotcha worth knowing).
+
 Two genuinely different tests, testing two different layers. Conflating
 them (e.g. concluding "it handles concurrency" from only one of the two) is
 the mistake to avoid.
@@ -802,6 +878,11 @@ live at once.
 ---
 
 ## 12. Assignment requirements in depth — exact structures for interview prep
+
+**Simple version:** the assignment brief asked for three specific things —
+a voice pipeline, a database with APIs, and caching. This section shows the
+literal, exact structure that satisfies each one (real schema, real
+endpoint list, real cache keys), not a summary of them.
 
 The assignment brief (`src/requirements.txt`) states three requirements this
 section maps directly against, with the *exact* current schema/contract for
