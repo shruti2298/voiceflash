@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from pipecat.frames.frames import InterruptionFrame
+from pipecat.frames.frames import BotStoppedSpeakingFrame, InterruptionFrame
 from pipecat.processors.frame_processor import FrameDirection
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -156,6 +156,43 @@ def test_turn_watchdog_ends_session_when_nothing_was_said(sqlite_session_local, 
 
     assert processor._session_id is None  # session was ended, not left dangling
     assert spoken  # the bot said something instead of going silent forever
+
+
+def test_bot_stopped_speaking_starts_listening_even_with_total_silence(sqlite_session_local, monkeypatch):
+    # The timeout watchdog used to only ever get created inside the
+    # VADUserStartedSpeakingFrame branch — meaning if the player never made
+    # ANY sound at all after the bot finished speaking the sequence, VAD
+    # never fired, no watchdog was ever created, and the game hung at
+    # "Listening..." forever with no timeout running whatsoever. Listening
+    # (and its timeout) must start the moment the bot stops speaking, not
+    # only once VAD detects the user has started talking.
+    monkeypatch.setattr(gp_module, "_TURN_TIMEOUT_BASE_SECS", 0.05)
+    monkeypatch.setattr(gp_module, "_TURN_TIMEOUT_PER_WORD_SECS", 0.0)
+
+    processor = MemoryGameProcessor(player_name="Ghosted")
+    spoken = []
+
+    async def fake_speak(text):
+        spoken.append(("speak", text))
+
+    async def fake_banter(instruction):
+        spoken.append(("banter", instruction))
+
+    processor._speak = fake_speak
+    processor._banter = fake_banter
+
+    async def scenario():
+        await processor._start_game()
+        # The only frame that fires after this in real usage — the bot's TTS
+        # audio actually finishing playback. No VAD event at all: total silence.
+        await processor.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        assert processor._turn_active is True
+        assert processor._turn_timeout_task is not None
+        await processor._turn_timeout_task  # let the timeout fire and force-resolve
+
+    asyncio.run(scenario())
+
+    assert processor._session_id is None  # game ended, not stuck listening forever
 
 
 def test_process_frame_resets_turn_on_any_interruption_frame():

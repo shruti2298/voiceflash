@@ -71,6 +71,12 @@ class MemoryGameProcessor(FrameProcessor):
         self._bot_speaking = False
         self._turn_timeout_task: asyncio.Task | None = None
         self._current_sequence_length = 0
+        # Set right before speaking a sequence the player must repeat back,
+        # and consumed by the next BotStoppedSpeakingFrame — see
+        # _start_listening() and its call sites for why this can't just be
+        # "listen whenever the bot stops talking" (banter/game-over lines
+        # also trigger BotStoppedSpeakingFrame, and don't expect an answer).
+        self._expecting_answer = False
 
     # ---- speech helpers -------------------------------------------------
     async def _speak(self, text: str):
@@ -133,6 +139,7 @@ class MemoryGameProcessor(FrameProcessor):
             f"Greet the player named {self._player_name} and announce we're starting "
             f"round {state.current_round} of Memory Card."
         )
+        self._expecting_answer = True
         await self._speak(self._say_sequence(seq))
 
     async def _handle_user_turn(self, transcript: str):
@@ -152,6 +159,7 @@ class MemoryGameProcessor(FrameProcessor):
             f"{result.total_score}. React with excitement and tell them round "
             f"{state.current_round} is next."
         )
+        self._expecting_answer = True
         await self._speak(self._say_sequence(seq))
 
     # ---- turn detection -------------------------------------------------
@@ -170,6 +178,21 @@ class MemoryGameProcessor(FrameProcessor):
         self._buffer.clear()
         self._turn_active = False
         self._user_stopped = False
+
+    def _start_listening(self):
+        """Begin (or restart) the listening window and its timeout watchdog.
+
+        Called from two places: the moment the bot finishes speaking a
+        sequence (so the timeout runs even if the player never makes a
+        sound at all — see the BotStoppedSpeakingFrame branch below), and
+        again once VAD actually detects speech (giving a fresh full window
+        from when the player genuinely starts answering).
+        """
+        self._buffer.clear()
+        self._turn_active = True
+        self._user_stopped = False
+        self._cancel_turn_timeout()
+        self._turn_timeout_task = asyncio.create_task(self._turn_timeout_watchdog())
 
     async def _finish_turn(self):
         """Fires once per turn: normally once we have both a stop signal and a
@@ -220,6 +243,15 @@ class MemoryGameProcessor(FrameProcessor):
 
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
+            if self._expecting_answer:
+                # The bot just finished speaking the sequence the player must
+                # repeat — start the listening window (and its timeout) now,
+                # not only once/if VAD detects the player actually talking.
+                # Without this, a player who never makes any sound at all
+                # left the game stuck on "Listening..." forever, since the
+                # watchdog used to only ever get created below.
+                self._expecting_answer = False
+                self._start_listening()
 
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             if self._bot_speaking:
@@ -236,11 +268,10 @@ class MemoryGameProcessor(FrameProcessor):
                     "broadcasting interruption to stop TTS/audio output</red>"
                 )
                 await self.broadcast_interruption()
-            self._buffer.clear()
-            self._turn_active = True
-            self._user_stopped = False
-            self._cancel_turn_timeout()
-            self._turn_timeout_task = asyncio.create_task(self._turn_timeout_watchdog())
+            # Restart the clock now that real speech has actually begun,
+            # giving the player the full window from this point rather than
+            # from whenever the bot happened to stop talking.
+            self._start_listening()
 
         elif isinstance(frame, TranscriptionFrame) and self._turn_active:
             self._buffer.append(frame.text)
