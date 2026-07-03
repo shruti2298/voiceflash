@@ -215,6 +215,11 @@ class MemoryGameProcessor(FrameProcessor):
                 # True barge-in: the transport doesn't emit StartInterruptionFrame
                 # on its own in this pipeline (see class docstring), so we trigger
                 # it ourselves — this is what actually stops the bot's audio.
+                logger.info(
+                    f"Barge-in detected for session {self._session_id!r} — "
+                    "user started speaking while the bot was mid-speech; "
+                    "broadcasting interruption to stop TTS/audio output"
+                )
                 await self.broadcast_interruption()
             self._buffer.clear()
             self._turn_active = True
