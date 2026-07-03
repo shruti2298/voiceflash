@@ -17,6 +17,11 @@ shared across processes so multiple users can play at once — see
 
 ## Architecture
 
+**Simple version:** one Python program does three jobs at once — answers normal web
+requests, runs the live voice call, and serves the web page — but there's only one place
+in the code that actually decides "was that answer right," so the voice bot and the website
+can never disagree about the score.
+
 One Python process does three jobs: serves REST APIs for sessions/state/scores/leaderboard,
 hosts the Pipecat voice pipeline over browser WebRTC, and serves a minimal web UI.
 
@@ -83,6 +88,10 @@ tests/                       # pytest suite (engine, cache, service, API)
 ---
 
 ## Game rules (deterministic — implemented in `engine.py`)
+
+**Simple version:** it's Simon Says. The bot says a growing list of words, you repeat them
+back in the same order, and plain code — never an AI model — checks if you got it exactly
+right.
 
 - A **sequence** is an ordered list of simple words drawn from a seeded pool (`game/words.py`).
 - **Difficulty ramp:** round *n* sequence length = `min(2 + n, MAX_LEN)` → round 1 = 3 words,
@@ -255,6 +264,9 @@ session independently instead of fighting over the same saved ID.
 
 ## API reference
 
+**Simple version:** five endpoints — start, check, answer, end, leaderboard. That's the
+entire API surface for the whole game.
+
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/sessions` | Start a new session. Body: `{"player_name": "..."}`. Returns `SessionState`. |
@@ -267,6 +279,10 @@ session independently instead of fighting over the same saved ID.
 ---
 
 ## Caching
+
+**Simple version:** two things get cached in Redis — the state of a live game, and the
+leaderboard — because both get read constantly. If Redis itself goes down, the game just
+gets a bit slower (falls back to the real database), it never breaks.
 
 `app/cache/store.py` is backed by **Redis** (`redis-py`), with two TTL'd keys per concern:
 
@@ -294,6 +310,10 @@ ever played, so replaying doesn't produce duplicate rows — you always see your
 
 ## Avoiding double-scoring
 
+**Simple version:** you can't accidentally get scored twice for the same answer, even if
+your app or the network glitches and sends the same answer twice — the database itself
+physically won't allow it, on top of the application already checking.
+
 `GameService.submit_answer` checks whether the target `Round` already has a stored
 `Response` before evaluating; if so, it returns the previously computed `AnswerResult`
 unchanged instead of re-running `engine.evaluate()`. This is backed by a database-level
@@ -304,6 +324,9 @@ for the same round can't produce two scored responses — see the next section f
 ---
 
 ## Concurrency & multi-user notes
+
+**Simple version:** "concurrency" just means "what happens when two things try to happen at
+the exact same time." Two real cases of that were found and fixed here, not hypothetical.
 
 This app is expected to have multiple people playing simultaneously — each in their own
 session, with their own voice call. Two concerns worth calling out explicitly:
@@ -346,6 +369,11 @@ scale behind a plain load balancer with no special routing.
 ---
 
 ## Voice pipeline notes
+
+**Simple version:** the two hardest real-time problems in any voice bot are knowing when
+someone's actually *done* talking, and reacting instantly if they talk over the bot. Both are
+solved by hand here rather than relying on the framework's defaults, which don't apply to a
+pipeline this minimal — see below for exactly why.
 
 - **Turn-taking:** Deepgram's final transcript frequently arrives *after* the transport's
   VAD emits `VADUserStoppedSpeakingFrame`. `MemoryGameProcessor` finishes a turn on whichever
