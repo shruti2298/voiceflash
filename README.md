@@ -9,9 +9,6 @@ Built with **Pipecat** (voice pipeline), **FastAPI** (REST + WebRTC signaling + 
 shared across processes so multiple users can play at once — see
 [Concurrency & multi-user notes](#concurrency--multi-user-notes)).
 
-> For a deeper dive into the full system design — tech choices and rationale,
-> scalability, fault tolerance, and concurrency handling — see
-> **[ARCH.md](ARCH.md)**.
 
 ---
 
