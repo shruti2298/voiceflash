@@ -381,6 +381,12 @@ pipeline this minimal — see below for exactly why.
   feedback. The timeout scales with the round's sequence length (6s base + 2.5s per word), so
   round 1's 3-word sequence gets ~13.5s while round 4's 6-word sequence gets ~21s — a flat
   timeout was cutting players off mid-answer on longer, harder sequences.
+- **Staying silent now properly ends the game instead of leaving it stuck.** The watchdog above
+  used to skip scoring entirely when nothing was said (an empty transcript failed a truthiness
+  check), so a player who never answered at all left the session dangling forever with no
+  game-over, no feedback, nothing. An empty transcript is now evaluated the same as any other
+  answer — `engine.evaluate()` correctly scores it wrong, ending the session and speaking the
+  correct sequence, exactly like a real incorrect answer would.
 - **Interruptions:** this Pipecat version never emits `StartInterruptionFrame` on its own
   without a `turn_analyzer`/`LLMUserAggregator` (which this minimal pipeline intentionally
   doesn't use). `MemoryGameProcessor` tracks whether the bot is currently speaking and, when
