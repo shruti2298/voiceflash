@@ -933,3 +933,372 @@ for the full story.
 
 **The one-sentence framing for the video, if asked "which of these was hardest":**
 *"Turn-taking and interruptions, #2 and #3 — because they're the two places where Pipecat's default behavior quietly didn't apply to a pipeline this minimal, and the only way to find that was reading the framework's own source, not its docs."*
+
+---
+
+## 14. Complete API reference — every endpoint, with real curl examples
+
+All five endpoints, base URL `http://localhost:8000`. Every request/response
+below is a **real captured run** against a live server backed by actual
+Postgres and Redis — not fabricated example JSON — so the shapes are exactly
+what you'll get.
+
+### 14.1 `POST /api/sessions` — start a session
+
+Calls `GameService.start_session()`: creates a `GameSession` row (status
+`ACTIVE`, score 0, round 1), generates round 1's sequence via
+`engine.generate_sequence()`, creates its `Round` row, commits, then warms
+the Redis cache (`store.set_active_session`).
+
+```bash
+curl -s -X POST http://localhost:8000/api/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"player_name": "DocsDemo"}'
+```
+```json
+{
+  "session_id": "f0536412-0b05-4173-88da-e267bfc34d9d",
+  "player_name": "DocsDemo",
+  "status": "ACTIVE",
+  "score": 0,
+  "current_round": 1,
+  "round_id": "e453e87e-b8b2-40c6-b711-ccb07c401a3c",
+  "sequence_length": 3,
+  "last_expected": null,
+  "last_heard": null,
+  "last_correct": null
+}
+```
+Note what's *not* here: the actual sequence. Only its length is ever exposed.
+
+### 14.2 `GET /api/sessions/{session_id}` — read state
+
+Calls `GameService.get_state()` — **cache-first**: tries Redis
+(`get_active_session`) before ever touching Postgres.
+
+```bash
+curl -s http://localhost:8000/api/sessions/f0536412-0b05-4173-88da-e267bfc34d9d
+```
+```json
+{
+  "session_id": "f0536412-0b05-4173-88da-e267bfc34d9d",
+  "player_name": "DocsDemo",
+  "status": "ACTIVE",
+  "score": 0,
+  "current_round": 1,
+  "round_id": "e453e87e-b8b2-40c6-b711-ccb07c401a3c",
+  "sequence_length": 3,
+  "last_expected": null,
+  "last_heard": null,
+  "last_correct": null
+}
+```
+
+**404 for an unknown session** (real captured response):
+```bash
+curl -s -w "\nHTTP %{http_code}\n" http://localhost:8000/api/sessions/does-not-exist
+```
+```
+{"detail":"session not found"}
+HTTP 404
+```
+
+### 14.3 `POST /api/sessions/{session_id}/answer` — submit an answer
+
+`app/api/routes.py` first calls `GameService.get_state()` to find the
+**current** `round_id`, then `GameService.submit_answer()`. Important
+detail this reveals: **this endpoint always answers whatever the current
+round is** — there's no way to target an old, already-resolved round
+through this route. (The true "same round_id twice" idempotency guarantee
+is a `GameService`-level contract, used directly by the voice pipeline —
+demonstrated in §14.6 below, not through this endpoint.)
+
+```bash
+curl -s -X POST http://localhost:8000/api/sessions/f0536412-0b05-4173-88da-e267bfc34d9d/answer \
+  -H "Content-Type: application/json" \
+  -d '{"transcript": "monkey helicopter candle"}'
+```
+```json
+{
+  "session_id": "f0536412-0b05-4173-88da-e267bfc34d9d",
+  "round_number": 1,
+  "is_correct": true,
+  "points_awarded": 30,
+  "total_score": 30,
+  "status": "ACTIVE",
+  "expected": ["monkey", "helicopter", "candle"],
+  "heard": ["monkey", "helicopter", "candle"]
+}
+```
+Note `expected`/`heard` **are** the real words here — but only ever for the
+round just answered, revealed after the fact (§12.2).
+
+**409 when there's no active round to answer** (session already ended):
+```bash
+curl -s -X POST http://localhost:8000/api/sessions/0834bc37-cec4-43f3-9fcf-a23cbaf1d9e3/answer \
+  -H "Content-Type: application/json" -d '{"transcript": "anything"}' \
+  -w "\nHTTP %{http_code}\n"
+```
+```
+{"detail":"no active round"}
+HTTP 409
+```
+
+### 14.4 `POST /api/sessions/{session_id}/end` — end a session
+
+Calls `GameService.end_session()`: marks the session `ENDED` (only if it
+was still `ACTIVE` — idempotent if called twice), drops its Redis key, and
+invalidates the leaderboard cache (score data just became final).
+
+```bash
+curl -s -X POST http://localhost:8000/api/sessions/0834bc37-cec4-43f3-9fcf-a23cbaf1d9e3/end
+```
+```json
+{
+  "session_id": "0834bc37-cec4-43f3-9fcf-a23cbaf1d9e3",
+  "player_name": "IdempotencyDemo",
+  "status": "ENDED",
+  "score": 30,
+  "current_round": 2,
+  "round_id": null,
+  "sequence_length": null,
+  "last_expected": ["candle", "castle", "rocket"],
+  "last_heard": ["candle", "castle", "rocket"],
+  "last_correct": true
+}
+```
+
+### 14.5 `GET /api/leaderboard?limit=10` — top scores
+
+Calls `GameService.leaderboard()` — cache-first against Redis; on a miss,
+`GROUP BY player_name, MAX(score)` so each player appears once (§10's dedup
+fix), then warms the cache.
+
+```bash
+curl -s "http://localhost:8000/api/leaderboard?limit=5"
+```
+```json
+[
+  {"player_name": "chandan", "score": 120},
+  {"player_name": "Player", "score": 70},
+  {"player_name": "shruti", "score": 30},
+  {"player_name": "xvcvx", "score": 30},
+  {"player_name": "shhhhhh", "score": 30}
+]
+```
+
+### 14.6 Real idempotency demo — the same round_id submitted twice
+
+This is the `GameService`-level guarantee the voice pipeline relies on
+directly (§14.3 explained why the REST `/answer` route can't demonstrate
+this the same way — it always targets the current round). Captured from an
+actual run:
+
+```python
+from app.db.database import SessionLocal
+from app.game.service import GameService
+
+db = SessionLocal()
+svc = GameService(db)
+state = svc.start_session("IdempotencyDemo")
+seq = svc.get_current_sequence(state.session_id)
+transcript = " ".join(seq)
+
+first = svc.submit_answer(state.session_id, state.round_id, transcript)
+again = svc.submit_answer(state.session_id, state.round_id, transcript)  # SAME round_id
+```
+```
+first:  points_awarded=30 total_score=30
+second: points_awarded=30 total_score=30   # NOT 60 — the second call returned
+                                            # the stored result, it did not re-score
+```
+
+---
+
+## 15. Complete database logic — every `GameService` method, in plain terms
+
+**The simple version first:** `GameService` is the only code in this
+project allowed to touch the database. Every method below does one clear
+job. Read this section top to bottom and you understand the entire game's
+backend logic — nothing important happens outside these functions.
+
+### 15.1 `start_session(player_name)` — begin a new game
+
+**What it does, in one sentence:** creates a new player and their first
+round, and remembers that they're playing.
+
+**Step by step:**
+1. Create a `GameSession` row: `status="ACTIVE"`, `score=0`, `current_round=1`.
+2. Call the private helper `_new_round()`, which asks `engine.generate_sequence(1, max_len)`
+   for round 1's words (3 words — see §12.1's difficulty ramp) and creates
+   the matching `Round` row (`status="PENDING"`).
+3. Commit both rows to Postgres in one transaction.
+4. Build a `SessionState` and write it into Redis (`store.set_active_session`)
+   so the very next read doesn't have to hit Postgres at all.
+
+### 15.2 `get_state(session_id)` — read the current state
+
+**What it does, in one sentence:** answers "what's happening in this game
+right now" — score, round, whether it's still active — as fast as possible.
+
+**Step by step:**
+1. Try Redis first (`store.get_active_session`). If found, deserialize and
+   return immediately — **Postgres is never touched on a cache hit.**
+2. On a miss, load the `GameSession` row from Postgres. If it doesn't
+   exist, raise `KeyError` (the API layer turns this into a `404`).
+3. Build the `SessionState` (score, round, and — via `_last_answered_round()`
+   — the previous round's expected/heard words, if any exist yet).
+4. If the session is still `ACTIVE`, write that state back into Redis
+   (re-warms the cache for the next read).
+
+### 15.3 `get_current_sequence(session_id)` — the actual words
+
+**What it does, in one sentence:** hands the voice bot the literal words it
+needs to say out loud — this is the *only* place in the whole codebase that
+returns the unanswered sequence, and it's never reachable through the REST
+API (see `app/api/routes.py` — no route calls it).
+
+### 15.4 `submit_answer(session_id, round_id, transcript)` — judge an answer
+
+**What it does, in one sentence:** decides if you got it right, and moves
+the game forward or ends it — this is the single most important function
+in the project.
+
+**Step by step:**
+1. Load the `GameSession` and the `Round` — if either's missing or doesn't
+   belong to this session, raise `KeyError`.
+2. **Idempotency check**: if this round already has a stored `Response`,
+   stop here and return that stored result unchanged (`_result_from_stored`)
+   — don't re-score something already scored.
+3. Call `engine.evaluate(expected_sequence, transcript)` — the one and only
+   place correctness is decided, 100% deterministic Python, no LLM involved.
+4. Save a new `Response` row with the verdict.
+5. **If correct:** add points to the session's score, advance `current_round`,
+   and call `_new_round()` to generate the *next* round's sequence.
+6. **If wrong:** mark the session `ENDED` and stamp `ended_at`.
+7. Commit. **If that commit fails with `IntegrityError`** — meaning another
+   request already answered this exact round first, a genuine race — roll
+   back, re-read what actually got saved, and return *that* instead of
+   crashing (§6.1 has the full story of this bug and its fix).
+8. Refresh Redis: warm the session cache if still `ACTIVE`, or drop it and
+   invalidate the leaderboard cache if the game just ended.
+
+### 15.5 `end_session(session_id)` — stop early
+
+**What it does, in one sentence:** lets a player quit mid-game, cleanly.
+
+Only actually changes anything if the session was still `ACTIVE` (calling
+this twice is a safe no-op, not an error) — marks it `ENDED`, stamps
+`ended_at`, then drops the Redis cache entry and invalidates the
+leaderboard (since a session ending is exactly when the leaderboard could
+change).
+
+### 15.6 `leaderboard(limit)` — the top scores
+
+**What it does, in one sentence:** shows the best score **per player**,
+not per game played.
+
+Cache-first (§16 has the full cache story). On a miss: `GROUP BY
+player_name`, take `MAX(score)` per group, order by that descending (tied
+scores broken by whoever reached it first) — this is the fix from §10 that
+stops the same player showing up multiple times just because they played
+more than once.
+
+### 15.7 The two helper methods worth understanding
+
+- **`_current_round(session)`** — finds the one `Round` row matching
+  `session.current_round`. Every "what's the active round" question in the
+  whole service goes through this one query.
+- **`_last_answered_round(session)`** — finds the most recently answered
+  round (correct *or* wrong) by joining `Round` to `Response` and taking
+  the highest `round_number` that has one. This is what powers the
+  "expected vs. heard" feedback shown after each round.
+
+---
+
+## 16. Complete cache logic — every `store.py` function, in plain terms
+
+**The simple version first:** `app/cache/store.py` is a thin wrapper around
+Redis with six functions. Nothing in this file knows anything about
+"games" — it just stores and retrieves JSON blobs by key, with an
+expiration time. All the game-specific meaning (what a "session" is) lives
+entirely in `GameService`, which is the *only* code that calls these
+functions.
+
+### 16.1 The two things that get cached, and why
+
+| What | Redis key | Expires after | Why cache it |
+|---|---|---|---|
+| Active session state | `session:{id}` | 30 min | Read on **every** voice turn and every `GET /api/sessions/{id}` poll (frontend polls every 1.5s) — the hottest read path in the whole app. |
+| Leaderboard | `leaderboard` | 60 sec | Read whenever anyone views the leaderboard; recomputing it means scanning/grouping every `GameSession` row, which is wasteful to do on every single view. |
+
+### 16.2 The six functions
+
+- **`get_active_session(session_id)`** — `GET session:{id}` from Redis,
+  JSON-decode it if found, return `None` if not (a genuine miss *or* Redis
+  being down — see 16.4).
+- **`set_active_session(session_id, state)`** — JSON-encode `state` and
+  `SETEX session:{id} 1800 <json>` — the `SETEX` is what sets the 30-minute
+  expiry atomically with the write.
+- **`drop_active_session(session_id)`** — `DEL session:{id}` — called when
+  a session ends, since there's nothing left worth caching.
+- **`get_leaderboard()` / `set_leaderboard(rows)`** — identical pattern,
+  key `leaderboard`, 60-second `SETEX`.
+- **`invalidate_leaderboard()`** — `DEL leaderboard` — called by
+  `submit_answer()` and `end_session()` any time a score could have
+  changed, so the cache never serves a leaderboard that's more than a
+  moment stale relative to an actual change (as opposed to just expiring
+  naturally after 60s regardless of whether anything changed).
+- **`clear_all()`** — test/dev helper only, wipes just this app's own keys
+  (`session:*` + `leaderboard`) via `SCAN`, deliberately never `FLUSHDB` —
+  this Redis instance/database might be shared with other data.
+
+### 16.3 The cache-first read pattern, traced through a real example
+
+This is exactly what happens when you call `GET /api/sessions/{id}` —
+captured live:
+
+```bash
+$ curl -s -X POST http://localhost:8000/api/sessions -d '{"player_name":"CacheDemo"}' ...
+# session_id: a31157c9-52a2-433c-8d4e-3ed20b8cb227
+
+$ docker compose exec redis redis-cli GET "session:a31157c9-52a2-433c-8d4e-3ed20b8cb227"
+{"session_id": "a31157c9-...", "player_name": "CacheDemo", "status": "ACTIVE",
+ "score": 0, "current_round": 1, "round_id": "4e9e4fe5-...", "sequence_length": 3, ...}
+
+$ docker compose exec redis redis-cli TTL "session:a31157c9-52a2-433c-8d4e-3ed20b8cb227"
+1800   # exactly 30 minutes, freshly set
+
+$ curl -s -X POST http://localhost:8000/api/sessions/a31157c9-.../end   # end the session
+
+$ docker compose exec redis redis-cli GET "session:a31157c9-52a2-433c-8d4e-3ed20b8cb227"
+(nil)   # gone immediately — drop_active_session() ran as part of end_session()
+
+$ docker compose exec redis redis-cli TTL "session:a31157c9-52a2-433c-8d4e-3ed20b8cb227"
+-2      # -2 means "key does not exist" in Redis's own convention (-1 would mean
+        # "exists but no expiry set")
+```
+
+The read side of this (`GameService.get_state`) is exactly two branches:
+**cache hit → return, never touch Postgres. Cache miss → query Postgres,
+then write the result into Redis so the *next* read is a hit.** That's the
+entire cache-aside pattern this project uses — no more complicated than
+that.
+
+### 16.4 What happens if Redis itself is down
+
+**The simple version:** the game still works, just a bit slower, because
+every function above is wrapped in a `try/except redis.exceptions.RedisError`.
+
+- A failed **read** (`get_active_session`, `get_leaderboard`) returns `None`
+  — which is *exactly* what a normal cache miss also looks like, so
+  `GameService` can't even tell the difference; it just falls back to
+  Postgres, same as always.
+- A failed **write** (`set_active_session`, etc.) logs a warning and does
+  nothing else — there's no result to return from a cache write, so there's
+  nothing to fall back to; the write is simply skipped.
+
+This was a real gap found during development, not a feature designed this
+way from the start (§5, §10 have the full before/after story) — the
+original code had no error handling around Redis calls at all, so an
+outage would have taken down every request that touched the cache.
