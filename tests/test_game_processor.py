@@ -1,6 +1,8 @@
 import asyncio
 
 import pytest
+from pipecat.frames.frames import InterruptionFrame
+from pipecat.processors.frame_processor import FrameDirection
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -117,3 +119,19 @@ def test_turn_watchdog_does_not_fire_if_turn_finishes_normally(sqlite_session_lo
 
     task = asyncio.run(scenario())
     assert task.cancelled()
+
+
+def test_process_frame_resets_turn_on_any_interruption_frame():
+    # broadcast_interruption() (used by our own barge-in path) creates a plain
+    # InterruptionFrame, not a StartInterruptionFrame — so process_frame must
+    # react to the base InterruptionFrame class, not just its subclass, or
+    # this reset never actually fires for any interruption this pipeline
+    # produces.
+    processor = MemoryGameProcessor(player_name="Interrupted")
+    processor._turn_active = True
+    processor._buffer = ["some", "words"]
+
+    asyncio.run(processor.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM))
+
+    assert processor._turn_active is False
+    assert processor._buffer == []

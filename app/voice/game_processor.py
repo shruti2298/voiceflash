@@ -2,9 +2,9 @@ import asyncio
 
 from loguru import logger
 from pipecat.frames.frames import (
-    BotStartedSpeakingFrame, BotStoppedSpeakingFrame, Frame, LLMMessagesFrame,
-    TTSSpeakFrame, TranscriptionFrame, VADUserStartedSpeakingFrame,
-    VADUserStoppedSpeakingFrame, StartInterruptionFrame,
+    BotStartedSpeakingFrame, BotStoppedSpeakingFrame, Frame, InterruptionFrame,
+    LLMMessagesFrame, TTSSpeakFrame, TranscriptionFrame,
+    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
@@ -200,8 +200,12 @@ class MemoryGameProcessor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, StartInterruptionFrame):
-            # barge-in: drop the in-progress utterance and current turn state
+        if isinstance(frame, InterruptionFrame):
+            # barge-in: drop the in-progress utterance and current turn state.
+            # Checking the base InterruptionFrame here (not the StartInterruptionFrame
+            # subclass) matters: broadcast_interruption() — what our own barge-in
+            # path below calls — creates a plain InterruptionFrame, which would
+            # never satisfy an isinstance check against the narrower subclass.
             self._reset_turn()
 
         elif isinstance(frame, BotStartedSpeakingFrame):
