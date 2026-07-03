@@ -624,7 +624,10 @@ User talks while the bot is mid-speech → transport's VAD path pushes
 plain `InterruptionFrame` both directions → every processor's base
 `process_frame()` (Pipecat framework code, not ours) checks
 `isinstance(frame, InterruptionFrame)` and stops in-flight work — this is
-what actually silences the TTS/audio output.
+what actually silences the TTS/audio output. `game_processor.py`'s *own*
+`process_frame()` checks the same base class for the same reason (§10) —
+it originally checked the narrower `StartInterruptionFrame` subclass, which
+a plain `InterruptionFrame` instance can never satisfy.
 
 ### 9.7 The concurrency race (double-submission)
 
@@ -766,6 +769,26 @@ without letting abandoned sessions accumulate in Redis forever; 60 seconds
 keeps the leaderboard feeling near-live without hitting Postgres on every
 single leaderboard view). Be ready to say exactly that if pressed — these
 weren't load-tested.
+
+**Q: Is the interruption-handling code actually correct, or does it just
+look right?**
+Found and fixed a real instance of "looks right, isn't": `process_frame()`
+checked `isinstance(frame, StartInterruptionFrame)` to reset turn state on
+barge-in — but `broadcast_interruption()` (what the barge-in path itself
+calls) creates a plain `InterruptionFrame`, and `StartInterruptionFrame` is
+a *subclass* of it. A parent-class instance never satisfies an `isinstance`
+check against a narrower subclass, so that branch was dead code — it could
+never fire for any interruption this pipeline actually produces. It was
+invisible in practice only because the barge-in branch a few lines below
+already resets turn state manually in the same code path that triggers the
+interruption, so nothing observable broke. **Fixed** by checking the base
+`InterruptionFrame` class instead, with a test
+(`test_process_frame_resets_turn_on_any_interruption_frame`) that
+constructs a plain `InterruptionFrame` directly — confirmed it fails
+against the old subclass check and passes against the fix. The honest
+lesson: "it works when I test it by hand" and "the code is structurally
+correct" are different claims, and this is a case where only reading the
+class hierarchy — not running the demo — would have caught it.
 
 **Q: What happens if I refresh the page mid-game?**
 Originally: the game was silently lost. `sessionId` lived only in a JS
